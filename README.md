@@ -102,24 +102,7 @@ The sync is safe to repeat:
 
 You need a Google account (and **Python 3.12+** if installing via `uv`, `pipx`, or source; standalone pre-built binaries require no Python runtime). The tool runs under your own Google Cloud OAuth client, so nobody else ever sees your calendar.
 
-### 1. Create Google API credentials
-
-1. Open the [Google Cloud Console](https://console.cloud.google.com/) and
-   create a **new project**.
-2. Go to **APIs & Services → Library** and enable the **Google Calendar API**.
-3. Go to **APIs & Services → OAuth consent screen**:
-   - Choose the **External** user type and fill in the required fields.
-   - Under **Test users**, add your own Google address. If you skip this, login
-     fails with `403 access_denied`.
-4. Go to **APIs & Services → Credentials → Create credentials → OAuth client
-   ID**, choose **Desktop app**, then download the JSON file.
-5. Import it directly into your user configuration directory:
-   ```bash
-   unical auth import /path/to/downloaded-credentials.json
-   ```
-   (Alternatively, save it as `credentials.json` in your working directory, or simply launch `unical` and let the interactive setup wizard prompt you for the file).
-
-### 2. Install
+### 1. Install
 
 Choose the installation method that best suits your environment:
 
@@ -184,6 +167,35 @@ pip install .
 ```
 
 This installs the `unical` command. `python -m unical` works too.
+
+### 2. Create Google API credentials
+
+The tool logs in under your own Google Cloud OAuth client. You only create it
+once; it's free and takes about five minutes. The
+[step-by-step credentials guide](docs/google-credentials-guide.md) walks
+through every screen. In short:
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create a
+   **new project**.
+2. [Enable the **Google Calendar API**](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com).
+3. Configure the [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent):
+   choose the **External** user type, then add your own Google address under
+   **Test users**. If you skip this, login fails with `403 access_denied`.
+4. [Create an **OAuth client ID**](https://console.cloud.google.com/apis/credentials)
+   of type **Desktop app** and download its JSON file.
+
+You don't need to place the file anywhere by hand: on the first run, `unical`
+notices it's missing and asks for its path (you can drag and drop the file onto
+the terminal). To import it ahead of time instead:
+
+```bash
+unical auth import /path/to/downloaded-credentials.json
+```
+
+> [!TIP]
+> If your university Google account doesn't let you create projects or OAuth
+> clients, create them with a personal `@gmail.com` account instead. See
+> [university accounts](docs/google-credentials-guide.md#university-google-accounts).
 
 ### 3. First run
 
