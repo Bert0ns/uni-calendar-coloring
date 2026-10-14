@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from textual import events
 from textual.widgets import Input, Label
 
 from unical.tui.wizard import CredentialsWizardApp, WizardCredentials
@@ -150,3 +151,31 @@ def test_credentials_wizard_escape_cancels(tmp_path: Path) -> None:
 
     asyncio.run(scenario())
     assert app.return_value is None
+
+
+def test_credentials_wizard_accepts_drop_while_app_blurred(tmp_path: Path) -> None:
+    """Dropping from a file manager pastes while the terminal is unfocused."""
+    source = tmp_path / "my creds.json"
+    source.write_text(
+        json.dumps({"installed": {"client_id": "id3", "client_secret": "sec3"}})
+    )
+    dest = tmp_path / "dest" / "credentials.json"
+    app = CredentialsWizardApp(destination=dest)
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = pilot.app.screen
+            input_widget = screen.query_one("#credentials-input", Input)
+            pilot.app.post_message(events.AppBlur())
+            await pilot.pause()
+            assert screen.focused is None
+            # Ptyxis / GNOME Terminal shell-quote the path and add a trailing space.
+            pilot.app.post_message(events.Paste(f"'{source}' "))
+            await pilot.pause()
+            assert input_widget.value == f"'{source}'"
+            assert input_widget.has_focus
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert app.return_value == dest.resolve()

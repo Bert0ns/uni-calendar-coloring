@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -155,8 +154,17 @@ def suggest_prefix(title: str, titles: Iterable[str]) -> str:
     similar = [other for other in titles if other.startswith(first) and other != title]
     if not similar:
         return first
-    common = os.path.commonprefix([title, *similar])
+    common = _common_prefix([title, *similar])
     return _cut_after_separator(common, last=True) or first
+
+
+def _common_prefix(texts: Sequence[str]) -> str:
+    """The longest string every one of ``texts`` starts with, char by char."""
+    shortest, longest = min(texts), max(texts)
+    for index, char in enumerate(shortest):
+        if char != longest[index]:
+            return shortest[:index]
+    return shortest
 
 
 def _cut_after_separator(text: str, last: bool) -> str | None:

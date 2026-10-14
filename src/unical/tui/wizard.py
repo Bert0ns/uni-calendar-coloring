@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -235,6 +236,23 @@ class WizardCredentials(ModalScreen[Path | None]):
 
     def on_mount(self) -> None:
         self.query_one("#credentials-input", Input).focus()
+
+    def on_paste(self, event: events.Paste) -> None:
+        """Route drag-and-dropped paths into the input even when it isn't focused.
+
+        Terminals deliver a dropped file as a bracketed paste, but the drop
+        happens while the file manager owns the focus: Textual has blurred the
+        app (and with it the input), so the paste reaches the screen instead.
+        """
+        event.stop()
+        text = event.text.strip()
+        if not text:
+            return
+        field = self.query_one("#credentials-input", Input)
+        field.value = text.splitlines()[0].strip()
+        field.cursor_position = len(field.value)
+        field.focus()
+        self.query_one("#credentials-error", Label).update("")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
