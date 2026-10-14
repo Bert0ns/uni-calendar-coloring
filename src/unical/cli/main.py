@@ -7,6 +7,7 @@ import functools
 import importlib.util
 import os
 import sys
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
@@ -506,6 +507,9 @@ def credentials_help(path: Path) -> list[str]:
     ]
 
 
+AUTH_ERRORS = (LoginFailedError, InvalidCredentialsError, GoogleAuthError)
+
+
 def report_auth_failure(exc: Exception, reporter: Reporter) -> None:
     """Reports a failed login with what to do next."""
     message = str(exc).strip()
@@ -662,7 +666,7 @@ def main_auth(
                 f"✔ Successfully authenticated! Token saved to '{config.token_path}'."
             )
             return EXIT_OK
-        except (LoginFailedError, InvalidCredentialsError, GoogleAuthError) as exc:
+        except AUTH_ERRORS as exc:
             report_auth_failure(exc, reporter)
             return EXIT_FAILURE
         except Exception as exc:
@@ -680,8 +684,8 @@ def _report_status(check: Check, reporter: Reporter) -> None:
 
 _DOCTOR_LABELS = {
     Status.PASS: "✔ PASS",
-    Status.WARN: "WARN",
-    Status.FAIL: "FAIL",
+    Status.WARN: "! WARN",
+    Status.FAIL: "✘ FAIL",
     Status.SKIP: "- SKIP",
 }
 
@@ -715,9 +719,7 @@ def main_doctor(
         if check.hint:
             reporter.info(f"    → {check.hint}")
 
-    counts = {status: 0 for status in Status}
-    for check in checks:
-        counts[check.status] += 1
+    counts = Counter(check.status for check in checks)
     reporter.info(
         f"{counts[Status.PASS]} passed, {counts[Status.WARN]} warnings, "
         f"{counts[Status.FAIL]} failed, {counts[Status.SKIP]} skipped."
@@ -736,7 +738,7 @@ def _get_gateway(config: Config, reporter: Reporter) -> CalendarGateway | None:
     try:
         credentials = authenticator.get_credentials()
         return GoogleCalendarClient.from_credentials(credentials)
-    except (LoginFailedError, InvalidCredentialsError, GoogleAuthError) as exc:
+    except AUTH_ERRORS as exc:
         report_auth_failure(exc, reporter)
         return None
     except Exception as exc:
@@ -1144,11 +1146,7 @@ def main(
                 )
                 try:
                     credentials = authenticator.get_credentials()
-                except (
-                    LoginFailedError,
-                    InvalidCredentialsError,
-                    GoogleAuthError,
-                ) as auth_exc:
+                except AUTH_ERRORS as auth_exc:
                     report_auth_failure(auth_exc, reporter)
                     return EXIT_FAILURE
                 except Exception as auth_exc:
@@ -1164,7 +1162,7 @@ def main(
     except LoginRequiredError as exc:
         reporter.error(str(exc))
         return EXIT_FAILURE
-    except (LoginFailedError, InvalidCredentialsError, GoogleAuthError) as exc:
+    except AUTH_ERRORS as exc:
         report_auth_failure(exc, reporter)
         return EXIT_FAILURE
 

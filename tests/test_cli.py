@@ -1212,6 +1212,11 @@ def test_doctor_unreadable_token(tmp_path: Path) -> None:
     assert "Unreadable" in check.detail
     assert creds is None
 
+    (tmp_path / "dir_token").mkdir()
+    check, creds = doctor.load_token(tmp_path / "dir_token")
+    assert check.status is doctor.Status.FAIL
+    assert creds is None
+
 
 def test_doctor_refresh_states() -> None:
     no_refresh = MagicMock(refresh_token=None)

@@ -21,7 +21,7 @@ from unical.auth import (
     oauth_client_type,
     validate_client_secrets,
 )
-from unical.config import Config, user_config_dir
+from unical.config import Config
 from unical.profile import CalendarSettings
 from unical.sync.gateway import CalendarGateway
 
@@ -32,6 +32,8 @@ LOGIN_AGAIN = "Run 'unical auth login' to log in with Google."
 
 
 class Status(Enum):
+    """Outcome of one check; any FAIL makes 'unical doctor' exit with 1."""
+
     PASS = "pass"
     WARN = "warn"
     FAIL = "fail"
@@ -40,14 +42,15 @@ class Status(Enum):
 
 @dataclass(frozen=True)
 class Check:
+    """One diagnostic line: what was checked, the outcome and how to fix it."""
+
     name: str
     status: Status
     detail: str
     hint: str | None = None
 
 
-def check_config_dir(config_dir: Path | None = None) -> Check:
-    path = config_dir or user_config_dir()
+def check_config_dir(path: Path) -> Check:
     if not path.exists():
         return Check(
             "Config directory",
@@ -91,7 +94,15 @@ def check_credentials(path: Path) -> Check:
     return Check(name, Status.PASS, f"Desktop app client {client_id} ({path})")
 
 
-def load_token(path: Path) -> tuple[Check, Any]:
+def check_profile(path: Path) -> Check:
+    if not path.exists():
+        return Check(
+            "Profile", Status.WARN, f"{path} not found", "The setup guide creates it."
+        )
+    return Check("Profile", Status.PASS, str(path))
+
+
+def load_token(path: Path) -> tuple[Check, Credentials | None]:
     """Checks the cached token without network access. Returns the check and,
     if usable, the credentials."""
     name = "Login token"
@@ -102,7 +113,7 @@ def load_token(path: Path) -> tuple[Check, Any]:
         )
     try:
         creds = Credentials.from_authorized_user_file(str(path))  # type: ignore[no-untyped-call]
-    except (ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError) as exc:
         return (
             Check(name, Status.FAIL, f"Unreadable ({path}): {exc}", LOGIN_AGAIN),
             None,
@@ -131,7 +142,9 @@ def load_token(path: Path) -> tuple[Check, Any]:
     return Check(name, Status.PASS, "Token expired (will refresh on next run)"), creds
 
 
-def check_refresh(creds: Any, request_factory: Callable[[], Any] = Request) -> Check:
+def check_refresh(
+    creds: Credentials, request_factory: Callable[[], Any] = Request
+) -> Check:
     """Refreshes the access token in memory to prove the saved login still works."""
     name = "Token refresh"
     if not creds.refresh_token:
@@ -143,7 +156,7 @@ def check_refresh(creds: Any, request_factory: Callable[[], Any] = Request) -> C
             + LOGIN_AGAIN,
         )
     try:
-        creds.refresh(request_factory())
+        creds.refresh(request_factory())  # type: ignore[no-untyped-call]
     except RefreshError as exc:
         return Check(
             name,
@@ -228,21 +241,11 @@ def run_checks(
     config: Config,
     calendars: CalendarSettings,
     gateway_factory: Callable[[Any], CalendarGateway],
-    config_dir: Path | None = None,
 ) -> list[Check]:
     checks = [
-        check_config_dir(config_dir),
+        check_config_dir(config.token_path.parent),
         check_credentials(config.credentials_path),
-        Check(
-            "Profile",
-            Status.PASS if config.profile_path.exists() else Status.WARN,
-            (
-                str(config.profile_path)
-                if config.profile_path.exists()
-                else f"{config.profile_path} not found"
-            ),
-            None if config.profile_path.exists() else "The setup guide creates it.",
-        ),
+        check_profile(config.profile_path),
     ]
     token_check, creds = load_token(config.token_path)
     checks.append(token_check)
