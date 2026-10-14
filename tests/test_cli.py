@@ -20,7 +20,7 @@ from unical.auth import (
     LoginRequiredError,
 )
 from unical.cli import main as cli
-from unical.config import Config
+from unical.config import Config, save_ical_url
 from unical.ical_source import IcalFeedSource, mask_url
 from unical.profile import CalendarSettings
 from unical.reporting import NullReporter
@@ -198,6 +198,21 @@ def test_build_source(config: Config) -> None:
     assert google.name == "Src"
     assert isinstance(ical, IcalFeedSource)
     assert ical.url == "https://x/y"
+
+
+def test_build_source_from_the_saved_ical_url(config: Config) -> None:
+    calendars = CalendarSettings(source="Src", target="Tgt")
+    saved_url = replace(config, saved_ical_url="https://x/saved")
+    source = cli.build_source(
+        saved_url, calendars, FakeCalendarGateway(), NullReporter()
+    )
+    assert isinstance(source, IcalFeedSource)
+    assert source.url == "https://x/saved"
+
+    given = replace(saved_url, source_ical_url="https://x/given")
+    source = cli.build_source(given, calendars, FakeCalendarGateway(), NullReporter())
+    assert isinstance(source, IcalFeedSource)
+    assert source.url == "https://x/given"
 
 
 # -- main() ------------------------------------------------------------------
@@ -565,6 +580,46 @@ def test_run_tui_builds_the_calendar_setup(config: Config, monkeypatch) -> None:
     setup = apps[-1].setup
     assert setup.fixed_source == "iCal feed at https://ical.example/<redacted>"
     assert isinstance(setup.source_for("Other"), IcalFeedSource)
+
+
+def test_run_tui_with_the_saved_ical_url(
+    config: Config, tmp_path: Path, monkeypatch
+) -> None:
+    pytest.importorskip("textual")
+    from unical.tui.app import UnicalApp
+
+    apps: list[UnicalApp] = []
+    monkeypatch.setattr(UnicalApp, "run", lambda self: apps.append(self))
+    path = tmp_path / "ical_url.txt"
+    saved_url = replace(
+        config,
+        saved_ical_url="https://ical.example/42/secret",
+        saved_ical_url_path=path,
+    )
+
+    cli.run_tui(SyncOptions(), saved_url, FakeCalendarGateway())
+    setup = apps[-1].setup
+    assert setup.fixed_source is None  # it can be changed from the TUI
+    assert setup.ical_url == "https://ical.example/42/secret"
+    assert isinstance(apps[-1].source, IcalFeedSource)
+    assert isinstance(setup.source_for("Other"), GoogleCalendarSource)
+    ical = setup.ical_source_for("https://ical.example/7/other")
+    assert isinstance(ical, IcalFeedSource)
+    assert ical.url == "https://ical.example/7/other"
+    setup.save_ical_url("https://ical.example/7/other")
+    assert path.read_text(encoding="utf-8") == "https://ical.example/7/other\n"
+    setup.save_ical_url(None)
+    assert not path.exists()
+
+    # --ical and SOURCE_ICAL_URL win over the saved URL, and can't be changed.
+    given = replace(saved_url, source_ical_url="https://ical.example/1/given")
+    cli.run_tui(SyncOptions(), given, FakeCalendarGateway())
+    setup = apps[-1].setup
+    assert setup.fixed_source == "iCal feed at https://ical.example/<redacted>"
+    assert setup.ical_url is None
+    source = apps[-1].source
+    assert isinstance(source, IcalFeedSource)
+    assert source.url == "https://ical.example/1/given"
 
 
 def test_run_tui_starts_the_guide_without_a_profile(
@@ -950,10 +1005,15 @@ def test_doctor_calendar_lookups(doctor_env, capsys) -> None:
     assert "WARN  Target calendar: 'Colored' not found" in out
 
 
+@pytest.mark.parametrize("saved", [False, True], ids=["env", "saved"])
 def test_doctor_skips_the_source_calendar_for_ical(
-    doctor_env, monkeypatch, capsys
+    doctor_env, monkeypatch, capsys, saved: bool
 ) -> None:
-    monkeypatch.setenv("SOURCE_ICAL_URL", "https://example.com/feed.ics?token=x")
+    url = "https://example.com/feed.ics?token=x"
+    if saved:
+        save_ical_url(url, config_mod.default_ical_url_path())
+    else:
+        monkeypatch.setenv("SOURCE_ICAL_URL", url)
     del doctor_env.calendars["id::Uni"]
 
     assert cli.main(["doctor"]) == cli.EXIT_OK

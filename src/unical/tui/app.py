@@ -35,12 +35,13 @@ from textual.widgets import (
 )
 
 from unical.events import Event
+from unical.ical_source import mask_url
 from unical.palette import GoogleColor
 from unical.profile import Profile, time_zone_error
 from unical.rules import Condition, Rule
 from unical.semesters import current_semester_window
 from unical.sync.models import CalendarInfo, SyncPlan, SyncResult
-from unical.sync.source import SourceCalendarNotFoundError
+from unical.sync.source import EventSource, SourceCalendarNotFoundError, SourceError
 from unical.targets import SyncTarget
 from unical.tui.model import (
     ColorRow,
@@ -61,6 +62,7 @@ from unical.tui.setup import (
     CalendarSetup,
     Role,
     calendar_choices,
+    default_target_name,
     target_name_error,
 )
 from unical.tui.widgets import (
@@ -74,7 +76,12 @@ from unical.tui.widgets import (
     plan_summary,
     swatch,
 )
-from unical.tui.wizard import RulesChoice, WizardIntro, WizardRules
+from unical.tui.wizard import (
+    RulesChoice,
+    WizardIntro,
+    WizardRules,
+    WizardSource,
+)
 from unical.version_check import check_for_updates, should_check_for_updates
 from unical.workflow import SyncOptions, SyncWorkflow
 
@@ -371,7 +378,9 @@ class UnicalApp(App[None]):
         self.workflow = workflow
         self.setup = setup
         self.calendars = setup.calendars
-        self.source = setup.source_for(setup.calendars.source)
+        self.ical_url = setup.ical_url
+        """The saved iCal feed the events come from, if any."""
+        self.source = self._source_for(setup.calendars.source, setup.ical_url)
         self.options = options
         self.profile: Profile | None = None
         self.draft: PreferencesDraft | None = None
@@ -902,7 +911,12 @@ class UnicalApp(App[None]):
     # -- calendars -----------------------------------------------------------
 
     def _refresh_setup(self) -> None:
-        source = self.setup.fixed_source or f"'{self.calendars.source}'"
+        if self.setup.fixed_source is not None:
+            source = self.setup.fixed_source
+        elif self.ical_url is not None:
+            source = f"iCal feed at {mask_url(self.ical_url)}"
+        else:
+            source = f"'{self.calendars.source}'"
         self._ui.query_one("#setup-source", Static).update(source)
         self._ui.query_one("#setup-target", Static).update(f"'{self.calendars.target}'")
         self._ui.query_one("#setup-time-zone", Static).update(
@@ -955,6 +969,11 @@ class UnicalApp(App[None]):
                 "The events come from an iCal feed, which is set outside the "
                 "profile: the source can't be changed here."
             )
+        elif self.ical_url is not None:
+            notes.append(
+                "The iCal link is a secret: it's saved on this computer only, "
+                "not in the profile."
+            )
         for role, variable in self.setup.overrides.items():
             notes.append(
                 f"{variable} is set: it replaces the saved {role.value} calendar "
@@ -975,6 +994,54 @@ class UnicalApp(App[None]):
                 self._calendar_picker(role, calendars),
                 partial(self._calendar_chosen, role),
             )
+
+    @work(group="source")
+    async def choose_source(self) -> None:
+        """Asks for an iCal feed or a Google calendar, then loads its events."""
+        choice = await self.push_screen_wait(
+            WizardSource(self._ical_url_error, title="Where your timetable comes from")
+        )
+        if choice is None:
+            return
+        if choice.url is not None:
+            self.load_session(ical_url=choice.url)
+            return
+        name = await self._pick_source_calendar()
+        self._calendar_chosen(Role.SOURCE, name)
+
+    async def _pick_source_calendar(
+        self, title: str | None = None, explanation: str = ""
+    ) -> str | None:
+        calendars = await self._list_calendars()
+        if calendars is None:
+            return None
+        return await self.push_screen_wait(
+            self._calendar_picker(Role.SOURCE, calendars, title, explanation)
+        )
+
+    def _ical_url_error(self, url: str) -> str | None:
+        """Why the iCal feed at ``url`` can't be used, or ``None`` if it can.
+        Downloads it: called in a worker thread."""
+        try:
+            self.setup.ical_source_for(url).fetch_events()
+        except SourceError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"Could not read the timetable at {mask_url(url)}: {exc}"
+        return None
+
+    def _source_for(self, source_name: str | None, ical_url: str | None) -> EventSource:
+        """The events of the iCal feed at ``ical_url`` if given, else of the
+        calendar ``source_name``."""
+        if ical_url is not None:
+            return self.setup.ical_source_for(ical_url)
+        assert source_name is not None
+        return self.setup.source_for(source_name)
+
+    @property
+    def _reads_ical(self) -> bool:
+        """True when the events come from an iCal feed, not a Google calendar."""
+        return self.setup.fixed_source is not None or self.ical_url is not None
 
     async def _list_calendars(self) -> list[CalendarInfo] | None:
         """The user's calendars (fetched once), or ``None`` if they can't be."""
@@ -999,8 +1066,8 @@ class UnicalApp(App[None]):
         explanation: str = "",
         new_name: str = "",
     ) -> CalendarPicker:
-        fixed = self.setup.fixed_source is not None
-        choices = calendar_choices(calendars, role, self.calendars, fixed)
+        ical = self._reads_ical
+        choices = calendar_choices(calendars, role, self.calendars, ical)
         if role is Role.SOURCE:
             return CalendarPicker(
                 title or "Calendar to read from", choices, explanation=explanation
@@ -1012,7 +1079,7 @@ class UnicalApp(App[None]):
                 target_name_error,
                 calendars=calendars,
                 current=self.calendars,
-                fixed_source=fixed,
+                ical_source=ical,
             ),
             new_name=new_name,
             explanation=explanation,
@@ -1031,22 +1098,21 @@ class UnicalApp(App[None]):
             self.load_session()
             return
         if self.setup.fixed_source is None:
-            calendars = await self._list_calendars()
-            source = None
-            if calendars is not None:
-                source = await self.push_screen_wait(
-                    self._calendar_picker(
-                        Role.SOURCE,
-                        calendars,
+            answer = await self.push_screen_wait(WizardSource(self._ical_url_error))
+            if answer is not None and answer.url is not None:
+                await self.load_session(ical_url=answer.url).wait()
+            else:
+                source = None
+                if answer is not None:  # a Google calendar
+                    source = await self._pick_source_calendar(
                         title="Step 1 · The calendar with your timetable",
                         explanation=(
                             "The read-only calendar of your university, as you "
                             "subscribed to it in Google Calendar."
                         ),
                     )
-                )
-            # Picking the current source also saves it, creating the profile.
-            await self.load_session(source_name=source).wait()
+                # Picking the current source also saves it, creating the profile.
+                await self.load_session(source_name=source).wait()
         else:
             await self.load_session().wait()
         if self.draft is None:
@@ -1063,7 +1129,7 @@ class UnicalApp(App[None]):
                     "Pick one of your calendars, or keep the new name: the "
                     "calendar is created when you apply the changes."
                 ),
-                new_name=f"{self.calendars.source} Colored",
+                new_name=default_target_name(self.calendars, self._reads_ical),
             )
         )
         if target is None:
@@ -1088,7 +1154,10 @@ class UnicalApp(App[None]):
         )
 
     def _calendar_chosen(self, role: Role, name: str | None) -> None:
-        if name is None or name == getattr(self.calendars, role.value):
+        if name is None:
+            return
+        unchanged = name == getattr(self.calendars, role.value)
+        if unchanged and not (role is Role.SOURCE and self.ical_url is not None):
             return
         if role is Role.SOURCE:
             # Committed once its events are loaded.
@@ -1101,6 +1170,22 @@ class UnicalApp(App[None]):
             {role.value: name}, f"The {role.value} calendar is now '{name}'."
         )
         self._discard_plan("Calendars changed: preview the changes again.")
+
+    def _use_ical_url(self, url: str | None) -> None:
+        """Reads the events from the iCal feed at ``url`` from now on, or from
+        the source calendar if ``None``, and saves the choice."""
+        self.ical_url = url
+        try:
+            self.setup.save_ical_url(url)
+        except OSError as exc:
+            self._write_log("error", f"Could not save the iCal link: {exc}")
+        else:
+            if url is not None:
+                self.notify(
+                    f"The events now come from the iCal feed at {mask_url(url)}."
+                )
+        self._discard_plan("Source changed: preview the changes again.")
+        self._refresh_setup()
 
     def _time_zone_chosen(self, value: str | None) -> None:
         if value is None:
@@ -1165,7 +1250,7 @@ class UnicalApp(App[None]):
         elif event.button.id == "apply":
             self.action_apply()
         elif event.button.id == "change-source":
-            self.choose_calendar(Role.SOURCE)
+            self.choose_source()
         elif event.button.id == "change-target":
             self.choose_calendar(Role.TARGET)
         elif event.button.id == "change-time-zone":
@@ -1218,11 +1303,16 @@ class UnicalApp(App[None]):
             self.apply_changes()
 
     @work(exclusive=True, group="calendar")
-    async def load_session(self, source_name: str | None = None) -> None:
-        """Loads the events, from the calendar ``source_name`` if given (then
-        the new source calendar), keeping the edits not saved yet."""
+    async def load_session(
+        self, source_name: str | None = None, ical_url: str | None = None
+    ) -> None:
+        """Loads the events, from the calendar ``source_name`` or the iCal feed
+        at ``ical_url`` if given (then the new source), keeping the edits not
+        saved yet."""
         source = (
-            self.source if source_name is None else self.setup.source_for(source_name)
+            self.source
+            if source_name is None and ical_url is None
+            else self._source_for(source_name, ical_url)
         )
         self._set_busy(True)
         for table in self._ui.query(DataTable):
@@ -1243,8 +1333,13 @@ class UnicalApp(App[None]):
         except Exception as exc:
             self._write_log("error", f"Could not load the source events: {exc}")
         else:
-            if source_name is not None:
+            if ical_url is not None:
                 self.source = source
+                self._use_ical_url(ical_url)
+            elif source_name is not None:
+                self.source = source
+                if self.ical_url is not None:
+                    self._use_ical_url(None)
                 self._commit_calendar(Role.SOURCE, source_name)
             saved = self.draft.saved_profile if self.draft is not None else None
             self.draft = PreferencesDraft(session, saved)

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import platformdirs
@@ -8,7 +9,9 @@ from unical.config import (
     Config,
     default_config_dir,
     default_credentials_path,
+    load_saved_ical_url,
     resolve_config_path,
+    save_ical_url,
     user_config_dir,
 )
 from unical.profile import CalendarSettings
@@ -170,3 +173,49 @@ def test_default_credentials_path(
     cwd_creds = Path("credentials.json")
     cwd_creds.touch()
     assert default_credentials_path() == Path("credentials.json")
+
+
+def test_saved_ical_url_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "dir" / "ical_url.txt"
+    assert load_saved_ical_url(path) is None
+
+    save_ical_url(" https://uni.example/42/secret ", path)
+    assert load_saved_ical_url(path) == "https://uni.example/42/secret"
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+    save_ical_url(None, path)
+    assert not path.exists()
+    save_ical_url(None, path)  # nothing to forget
+
+
+def test_saved_ical_url_is_private_even_if_the_file_existed(tmp_path: Path) -> None:
+    path = tmp_path / "ical_url.txt"
+    path.write_text("old", encoding="utf-8")
+    path.chmod(0o644)
+    save_ical_url("https://uni.example/new", path)
+    assert load_saved_ical_url(path) == "https://uni.example/new"
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_saved_ical_url_has_the_lowest_priority(tmp_path: Path) -> None:
+    save_ical_url("https://uni.example/saved", tmp_path / "ical_url.txt")
+
+    config = Config.from_env({}, config_dir=tmp_path)
+    assert config.source_ical_url is None
+    assert config.saved_ical_url == "https://uni.example/saved"
+    assert config.saved_ical_url_path == tmp_path / "ical_url.txt"
+    assert config.ical_url == "https://uni.example/saved"
+
+    config = Config.from_env(
+        {"SOURCE_ICAL_URL": "https://uni.example/env"}, config_dir=tmp_path
+    )
+    assert config.ical_url == "https://uni.example/env"
+
+
+def test_saved_ical_url_in_the_user_config_dir() -> None:
+    path = config_mod.default_config_dir() / "ical_url.txt"  # isolated by conftest
+    save_ical_url("https://uni.example/saved", path)
+    assert Config.from_env({}).ical_url == "https://uni.example/saved"
+    assert Config().ical_url is None

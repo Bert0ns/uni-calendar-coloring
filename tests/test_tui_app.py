@@ -25,6 +25,7 @@ from textual.widgets import (
 
 from unical.cli.main import build_workflow
 from unical.config import Config
+from unical.ical_source import ICalError, IcalFeedSource
 from unical.palette import GoogleColor
 from unical.profile import CalendarSettings
 from unical.rules import EventKind, MatchKind
@@ -48,7 +49,7 @@ from unical.tui.widgets import (
     TextPrompt,
     progress_text,
 )
-from unical.tui.wizard import WizardIntro, WizardRules
+from unical.tui.wizard import WizardIntro, WizardRules, WizardSource
 from unical.workflow import SyncOptions
 
 SOURCE = [
@@ -86,6 +87,23 @@ SOURCE = [
     },
 ]
 
+FEED_URL = "webcal://uni.example/42/secret"
+FEED = (
+    "BEGIN:VCALENDAR\n"
+    "BEGIN:VEVENT\nUID:lec1@uni\nDTSTART:20260917T101500\nDTEND:20260917T121500\n"
+    "SUMMARY:Lezione: Didattica - CS\nEND:VEVENT\n"
+    "BEGIN:VEVENT\nUID:lec2@uni\nDTSTART:20260918T101500\nDTEND:20260918T121500\n"
+    "SUMMARY:Lezione: Didattica - Chemistry\nEND:VEVENT\n"
+    "END:VCALENDAR\n"
+)
+
+
+def fetch_feed(url: str) -> str:
+    if url != FEED_URL:
+        raise ICalError("Could not download iCal feed: not found.")
+    return FEED
+
+
 Scenario = Callable[[UnicalApp, Pilot[None]], Awaitable[None]]
 
 
@@ -105,11 +123,25 @@ def make_app(
 
 
 def make_setup(gateway: FakeCalendarGateway, **kwargs: Any) -> CalendarSetup:
+    """A setup where the iCal feeds come from ``fetch_feed`` and the chosen
+    URL isn't saved."""
+    kwargs = {
+        "ical_source_for": lambda url: IcalFeedSource(url, fetch=fetch_feed),
+        "save_ical_url": lambda url: None,
+        **kwargs,
+    }
     return CalendarSetup(
         calendars=CalendarSettings(source="Src", target="Tgt"),
         source_for=lambda name: GoogleCalendarSource(gateway, name),
         **kwargs,
     )
+
+
+def ical_setup(
+    gateway: FakeCalendarGateway, saved_urls: list[str | None], **kwargs: Any
+) -> CalendarSetup:
+    """Like :func:`make_setup`, recording the saved URL in ``saved_urls``."""
+    return make_setup(gateway, save_ical_url=saved_urls.append, **kwargs)
 
 
 def drive(app: UnicalApp, scenario: Scenario) -> None:
@@ -676,9 +708,18 @@ async def open_picker(app: UnicalApp, pilot: Pilot[None], role: str) -> Calendar
     app.query_one(TabbedContent).active = "setup"
     await pilot.pause()
     await pilot.click(f"#change-{role}")
+    if role == "source":
+        await pick_google_source(app, pilot)
+        return await screen_of(app, pilot, CalendarPicker)  # type: ignore[no-any-return]
     await settle(app, pilot)
     assert isinstance(app.screen, CalendarPicker)
     return app.screen
+
+
+async def pick_google_source(app: UnicalApp, pilot: Pilot[None]) -> None:
+    """Answers the question of where the timetable comes from: Google."""
+    await screen_of(app, pilot, WizardSource)
+    await pilot.click("#source-google")
 
 
 async def pick_calendar(
@@ -918,6 +959,7 @@ def test_calendar_list_failure_is_reported(config: Config) -> None:
         app.query_one(TabbedContent).active = "setup"
         await pilot.pause()
         await pilot.click("#change-source")
+        await pick_google_source(app, pilot)
         await settle(app, pilot)
         assert len(app.screen_stack) == 1
         assert "Could not list your calendars: offline" in await log_text(app, pilot)
@@ -958,6 +1000,85 @@ def test_an_ical_source_cannot_be_changed(config: Config) -> None:
         assert not app.query_one("#change-target", Button).disabled
         assert text_of(app, "#setup-source") == "iCal feed at https://x/<redacted>"
         assert "iCal feed" in text_of(app, "#setup-notes")
+
+    drive(app, scenario)
+
+
+def test_a_saved_ical_source_can_be_replaced_by_a_calendar(config: Config) -> None:
+    gateway = FakeCalendarGateway({"Src": SOURCE})
+    save_profile(config, calendars={"source": "Src", "target": "Tgt"})
+    saved_urls: list[str | None] = []
+    setup = ical_setup(gateway, saved_urls, ical_url=FEED_URL)
+    app = make_app(config, gateway, setup=setup)
+
+    async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
+        app.query_one(TabbedContent).active = "setup"
+        await pilot.pause()
+        assert isinstance(app.source, IcalFeedSource)
+        assert (
+            text_of(app, "#setup-source")
+            == "iCal feed at webcal://uni.example/<redacted>"
+        )
+        assert "saved on this computer" in text_of(app, "#setup-notes")
+        assert not app.query_one("#change-source", Button).disabled
+        assert app.query_one("#courses-table", DataTable).get_row("Chemistry")
+
+        # "Src" is the profile's source, but not the one in use.
+        await pick_calendar(app, pilot, "source", "Src")
+
+        assert saved_urls == [None]
+        assert app.ical_url is None
+        assert isinstance(app.source, GoogleCalendarSource)
+        assert text_of(app, "#setup-source") == "'Src'"
+        assert app.query_one("#courses-table", DataTable).get_row("Math")
+
+    drive(app, scenario)
+
+
+def test_change_the_source_to_an_ical_link(config: Config) -> None:
+    gateway = FakeCalendarGateway({"Src": SOURCE})
+    save_profile(config, calendars={"source": "Src", "target": "Tgt"})
+    saved_urls: list[str | None] = []
+    app = make_app(config, gateway, setup=ical_setup(gateway, saved_urls))
+
+    async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
+        app.query_one(TabbedContent).active = "setup"
+        await pilot.pause()
+        await pilot.click("#change-source")
+        source = await screen_of(app, pilot, WizardSource)
+        assert source.title_text == "Where your timetable comes from"
+        source.query_one(Input).value = FEED_URL
+        await pilot.press("enter")
+        await until(pilot, lambda: app.ical_url is not None)
+        await settle(app, pilot)
+
+        assert saved_urls == [FEED_URL]
+        assert isinstance(app.source, IcalFeedSource)
+        assert app.sub_title.startswith("iCal feed ➔ 'Tgt'")
+        assert app.query_one("#courses-table", DataTable).get_row("Chemistry")
+        # The link is a secret: it's never written to the profile.
+        assert saved(config, "calendars")["source"] == "Src"
+        assert "secret" not in config.profile_path.read_text(encoding="utf-8")
+
+    drive(app, scenario)
+
+
+def test_ical_link_save_failure_is_reported(config: Config) -> None:
+    gateway = FakeCalendarGateway({"Src": SOURCE})
+
+    def boom(url: str | None) -> None:
+        raise OSError("read-only file system")
+
+    setup = make_setup(gateway, save_ical_url=boom)
+    app = make_app(config, gateway, setup=setup)
+
+    async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
+        app.load_session(ical_url=FEED_URL)
+        await settle(app, pilot)
+        assert isinstance(app.source, IcalFeedSource)
+        assert "Could not save the iCal link: read-only file system" in (
+            await log_text(app, pilot)
+        )
 
     drive(app, scenario)
 
@@ -1351,6 +1472,7 @@ def test_first_run_guide_keeping_the_rules(config: Config) -> None:
     async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
         await screen_of(app, pilot, WizardIntro)
         await pilot.press("enter")
+        await pick_google_source(app, pilot)
 
         source = await screen_of(app, pilot, CalendarPicker)
         assert source.title_text.startswith("Step 1")
@@ -1396,6 +1518,7 @@ def test_first_run_guide_adjusting_the_rules(
     async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
         await screen_of(app, pilot, WizardIntro)
         await pilot.press("enter")
+        await pick_google_source(app, pilot)
         await screen_of(app, pilot, CalendarPicker)
         await pilot.press("enter")  # the current source
         target = await screen_of(app, pilot, CalendarPicker)
@@ -1439,6 +1562,7 @@ def test_leaving_the_source_step_loads_the_current_source(config: Config) -> Non
     async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
         await screen_of(app, pilot, WizardIntro)
         await pilot.press("enter")
+        await pick_google_source(app, pilot)
         await screen_of(app, pilot, CalendarPicker)
         await pilot.press("escape")
         # "Src" doesn't exist: the guide ends on the Setup tab.
@@ -1456,6 +1580,7 @@ def test_leaving_the_target_step_ends_the_guide(config: Config) -> None:
     async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
         await screen_of(app, pilot, WizardIntro)
         await pilot.press("enter")
+        await pick_google_source(app, pilot)
         await screen_of(app, pilot, CalendarPicker)
         await pilot.press("enter")
         target = await screen_of(app, pilot, CalendarPicker)
@@ -1486,6 +1611,79 @@ def test_first_run_guide_with_an_ical_source(config: Config) -> None:
     drive_wizard(app, scenario)
 
 
+def ical_status(screen: WizardSource) -> str:
+    return str(screen.query_one("#ical-status", Label).render())
+
+
+def test_first_run_guide_with_an_ical_link(config: Config) -> None:
+    gateway = FakeCalendarGateway({"Me": []})
+    saved_urls: list[str | None] = []
+    app = make_app(
+        config, gateway, setup=ical_setup(gateway, saved_urls, first_run=True)
+    )
+
+    async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
+        await screen_of(app, pilot, WizardIntro)
+        await pilot.press("enter")
+
+        source = await screen_of(app, pilot, WizardSource)
+        assert source.title_text.startswith("Step 1")
+        await pilot.press("enter")
+        assert "Paste the link" in ical_status(source)
+
+        source.query_one(Input).value = "https://uni.example/expired"
+        await pilot.press("enter")
+        await until(pilot, lambda: "Could not download" in ical_status(source))
+        assert source.query_one("#ical-status").has_class("error")
+        assert app.screen is source
+        assert saved_urls == []
+
+        source.query_one(Input).value = f"  {FEED_URL} "
+        await pilot.click("#source-ical")
+
+        target = await screen_of(app, pilot, CalendarPicker)
+        assert target.title_text.startswith("Step 2")
+        assert saved_urls == [FEED_URL]
+        assert app.ical_url == FEED_URL
+        assert isinstance(app.source, IcalFeedSource)
+        assert (
+            text_of(app, "#setup-source")
+            == "iCal feed at webcal://uni.example/<redacted>"
+        )
+        field = target.query_one(Input)
+        assert field.value == "University Timetable"
+        field.focus()
+        await pilot.press("enter")
+
+        rules = await screen_of(app, pilot, WizardRules)
+        assert "2 lectures" in str(rules.query_one(".wizard-text", Static).render())
+        await pilot.press("enter")
+
+        await until(pilot, lambda: app.plan is not None)
+        assert saved(config, "calendars")["target"] == "University Timetable"
+        assert "secret" not in config.profile_path.read_text(encoding="utf-8")
+        assert gateway.created == []
+
+    drive_wizard(app, scenario)
+
+
+def test_leaving_the_source_question_loads_the_current_source(config: Config) -> None:
+    app = first_run_app(config, FakeCalendarGateway({"Src": SOURCE}))
+
+    async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
+        await screen_of(app, pilot, WizardIntro)
+        await pilot.press("enter")
+        await screen_of(app, pilot, WizardSource)
+        await pilot.press("escape")
+        target = await screen_of(app, pilot, CalendarPicker)
+        assert target.title_text.startswith("Step 2")
+        assert app.draft is not None
+        assert app.calendars.source == "Src"
+        assert app.ical_url is None
+
+    drive_wizard(app, scenario)
+
+
 def test_first_run_guide_without_the_calendar_list(config: Config) -> None:
     gateway = FakeCalendarGateway({"Src": SOURCE})
 
@@ -1498,6 +1696,7 @@ def test_first_run_guide_without_the_calendar_list(config: Config) -> None:
     async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
         await screen_of(app, pilot, WizardIntro)
         await pilot.press("enter")
+        await pick_google_source(app, pilot)
         await until(pilot, lambda: app.draft is not None and not app.busy)
         await pilot.pause()
         assert len(app.screen_stack) == 1
