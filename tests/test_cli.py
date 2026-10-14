@@ -12,9 +12,11 @@ from conftest import FakeCalendarGateway, save_profile, saved
 from google.auth.exceptions import RefreshError, TransportError
 
 from unical import config as config_mod
+from unical import doctor
 from unical.auth import (
     CredentialsFileNotFoundError,
     InvalidCredentialsError,
+    LoginFailedError,
     LoginRequiredError,
 )
 from unical.cli import main as cli
@@ -727,8 +729,9 @@ def test_auth_status_not_logged_in(isolated_env, capsys) -> None:
     ret = cli.main(["auth", "status"])
     assert ret == cli.EXIT_OK
     out = capsys.readouterr().out
-    assert "Configured" in out
+    assert "Status: Desktop app client c1" in out
     assert "Status: Not logged in" in out
+    assert "unical doctor" in out
 
 
 def test_auth_status_logged_in(isolated_env, capsys) -> None:
@@ -754,7 +757,7 @@ def test_auth_status_logged_in(isolated_env, capsys) -> None:
     ret = cli.main(["auth", "status"])
     assert ret == cli.EXIT_OK
     out = capsys.readouterr().out
-    assert "Status: Logged in (token valid)" in out
+    assert "Status: Logged in (token valid until 2099-01-01 00:00 UTC)" in out
 
 
 def test_auth_status_token_expired(isolated_env, capsys) -> None:
@@ -802,6 +805,216 @@ def test_auth_login_success(isolated_env, monkeypatch, capsys) -> None:
     assert ret == cli.EXIT_OK
     fake_authenticator.return_value.get_credentials.assert_called_once()
     assert "Successfully authenticated" in capsys.readouterr().out
+
+
+def test_auth_status_warns_about_web_clients(isolated_env, capsys) -> None:
+    (isolated_env / "credentials.json").write_text(
+        json.dumps({"web": {"client_id": "w1", "client_secret": "s1"}})
+    )
+
+    assert cli.main(["auth", "status"]) == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert "Status: Web application client w1" in out
+    assert "redirect_uri_mismatch" in out
+
+
+def test_auth_login_reports_denied_login_with_hints(
+    isolated_env, fake_auth, capsys
+) -> None:
+    (isolated_env / "credentials.json").write_text(
+        json.dumps({"installed": {"client_id": "c1", "client_secret": "s1"}})
+    )
+    fake_auth.return_value.get_credentials.side_effect = LoginFailedError(
+        "Google login was cancelled or denied (access_denied)."
+    )
+
+    assert cli.main(["auth", "login"]) == cli.EXIT_FAILURE
+    out = capsys.readouterr().out
+    assert "Authentication failed: Google login was cancelled" in out
+    assert "unical doctor" in out
+
+
+def test_main_reports_denied_login(isolated_env, fake_auth, capsys) -> None:
+    fake_auth.return_value.get_credentials.side_effect = LoginFailedError(
+        "Google login was cancelled or denied (access_denied)."
+    )
+
+    assert cli.main(["--no-tui"]) == cli.EXIT_FAILURE
+    out = capsys.readouterr().out
+    assert "access_denied" in out
+    assert "unical auth login" in out
+
+
+def test_credentials_help_mentions_personal_accounts(tmp_path: Path) -> None:
+    assert any(
+        "@gmail.com" in line for line in cli.credentials_help(tmp_path / "c.json")
+    )
+
+
+# -- doctor -------------------------------------------------------------------
+
+
+def write_token(directory: Path, **overrides) -> None:
+    token = {
+        "token": "tok",
+        "refresh_token": "ref",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": "cid",
+        "client_secret": "sec",
+        "expiry": "2099-01-01T00:00:00Z",
+        "scopes": ["https://www.googleapis.com/auth/calendar"],
+    }
+    token.update(overrides)
+    (directory / "token.json").write_text(json.dumps(token))
+
+
+@pytest.fixture
+def doctor_env(isolated_env, monkeypatch):
+    """A complete setup: Desktop client, valid token and both calendars."""
+    (isolated_env / "credentials.json").write_text(
+        json.dumps({"installed": {"client_id": "c1", "client_secret": "s1"}})
+    )
+    write_token(isolated_env)
+    monkeypatch.setenv("SOURCE_CALENDAR_NAME", "Uni")
+    monkeypatch.setenv("TARGET_CALENDAR_NAME", "Colored")
+    refreshes: list[object] = []
+    monkeypatch.setattr(
+        doctor.Credentials, "refresh", lambda self, request: refreshes.append(self)
+    )
+    gateway = FakeCalendarGateway({"Uni": [], "Colored": []})
+    install_gateway(monkeypatch, gateway)
+    return gateway
+
+
+def test_doctor_passes_on_a_complete_setup(doctor_env, monkeypatch, capsys) -> None:
+    login = MagicMock()
+    monkeypatch.setattr(cli.Authenticator, "get_credentials", login)
+
+    assert cli.main(["doctor"]) == cli.EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "PASS  Credentials: Desktop app client c1" in out
+    assert "PASS  Login token: Logged in" in out
+    assert "PASS  Token refresh" in out
+    assert "PASS  Calendar API: 2 calendars visible" in out
+    assert "PASS  Source calendar: 'Uni'" in out
+    assert "PASS  Target calendar: 'Colored' is writable" in out
+    assert "0 failed" in out
+    login.assert_not_called()
+
+
+def test_doctor_fails_without_credentials_or_token(isolated_env, capsys) -> None:
+    assert cli.main(["doctor"]) == cli.EXIT_FAILURE
+
+    out = capsys.readouterr().out
+    assert "WARN  Config directory" in out
+    assert "FAIL  Credentials: Missing" in out
+    assert "@gmail.com" in out
+    assert "FAIL  Login token: Not logged in" in out
+    assert "SKIP  Calendar API" in out
+
+
+def test_doctor_warns_about_web_clients(doctor_env, isolated_env, capsys) -> None:
+    (isolated_env / "credentials.json").write_text(
+        json.dumps({"web": {"client_id": "w1", "client_secret": "s1"}})
+    )
+
+    assert cli.main(["doctor"]) == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert "WARN  Credentials: Web application client w1" in out
+    assert "redirect_uri_mismatch" in out
+
+
+def test_doctor_rejects_service_account_keys(doctor_env, isolated_env, capsys):
+    (isolated_env / "credentials.json").write_text(
+        json.dumps({"type": "service_account"})
+    )
+
+    assert cli.main(["doctor"]) == cli.EXIT_FAILURE
+    assert "FAIL  Credentials: Invalid" in capsys.readouterr().out
+
+
+def test_doctor_fails_when_the_token_lacks_the_calendar_scope(
+    doctor_env, isolated_env, capsys
+) -> None:
+    write_token(isolated_env, scopes=["openid"])
+
+    assert cli.main(["doctor"]) == cli.EXIT_FAILURE
+    out = capsys.readouterr().out
+    assert "FAIL  Login token: Missing the Calendar scope" in out
+    assert "SKIP  Calendar API" in out
+
+
+def test_doctor_reports_a_revoked_login(
+    doctor_env, isolated_env, monkeypatch, capsys
+) -> None:
+    write_token(isolated_env, expiry="2000-01-01T00:00:00Z")
+
+    def revoked(self, request):
+        raise RefreshError("invalid_grant")
+
+    monkeypatch.setattr(doctor.Credentials, "refresh", revoked)
+
+    assert cli.main(["doctor"]) == cli.EXIT_FAILURE
+    out = capsys.readouterr().out
+    assert "PASS  Login token: Token expired" in out
+    assert "FAIL  Token refresh: The saved login expired or was revoked" in out
+    assert "unical auth login" in out
+    assert "SKIP  Calendar API" in out
+
+
+def test_doctor_reports_an_expired_token_without_refresh_token(
+    doctor_env, isolated_env, capsys
+) -> None:
+    write_token(isolated_env, expiry="2000-01-01T00:00:00Z", refresh_token=None)
+
+    assert cli.main(["doctor"]) == cli.EXIT_FAILURE
+    assert "cannot be refreshed" in capsys.readouterr().out
+
+
+def test_doctor_hints_at_enabling_the_calendar_api(
+    doctor_env, monkeypatch, capsys
+) -> None:
+    def disabled():
+        raise RuntimeError(
+            "Calendar API has not been used in project 1 before or it is disabled"
+        )
+
+    monkeypatch.setattr(doctor_env, "list_calendars", disabled)
+
+    assert cli.main(["doctor"]) == cli.EXIT_FAILURE
+    out = capsys.readouterr().out
+    assert "FAIL  Calendar API" in out
+    assert doctor.CALENDAR_API_URL in out
+
+
+def test_doctor_fails_on_a_read_only_target(doctor_env, capsys) -> None:
+    doctor_env.read_only.add("Colored")
+
+    assert cli.main(["doctor"]) == cli.EXIT_FAILURE
+    assert "FAIL  Target calendar: 'Colored' is read-only" in capsys.readouterr().out
+
+
+def test_doctor_calendar_lookups(doctor_env, capsys) -> None:
+    del doctor_env.calendars["id::Colored"]
+    del doctor_env.calendars["id::Uni"]
+
+    assert cli.main(["doctor"]) == cli.EXIT_FAILURE
+    out = capsys.readouterr().out
+    assert "FAIL  Source calendar: 'Uni' not found" in out
+    assert "WARN  Target calendar: 'Colored' not found" in out
+
+
+def test_doctor_skips_the_source_calendar_for_ical(
+    doctor_env, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("SOURCE_ICAL_URL", "https://example.com/feed.ics?token=x")
+    del doctor_env.calendars["id::Uni"]
+
+    assert cli.main(["doctor"]) == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert "PASS  Source calendar: iCal feed" in out
+    assert "token=x" not in out
 
 
 def test_main_first_run_triggers_wizard_when_tui(isolated_env, monkeypatch) -> None:
@@ -1037,3 +1250,43 @@ def test_parse_args_inverted_window_fails(capsys) -> None:
         cli.parse_args(["--from", "2026-09-15", "--to", "2026-03-01"])
     assert exc_info.value.code == 2
     assert "--from date cannot be after --to date" in capsys.readouterr().err
+
+
+def test_doctor_config_dir_states(tmp_path: Path, monkeypatch) -> None:
+    assert doctor.check_config_dir(tmp_path).status is doctor.Status.PASS
+    monkeypatch.setattr(doctor.os, "access", lambda path, mode: False)
+    check = doctor.check_config_dir(tmp_path)
+    assert check.status is doctor.Status.FAIL
+    assert "not writable" in check.detail
+
+
+def test_doctor_unreadable_token(tmp_path: Path) -> None:
+    (tmp_path / "token.json").write_text("{}")
+    check, creds = doctor.load_token(tmp_path / "token.json")
+    assert check.status is doctor.Status.FAIL
+    assert "Unreadable" in check.detail
+    assert creds is None
+
+    (tmp_path / "dir_token").mkdir()
+    check, creds = doctor.load_token(tmp_path / "dir_token")
+    assert check.status is doctor.Status.FAIL
+    assert creds is None
+
+
+def test_doctor_refresh_states() -> None:
+    no_refresh = MagicMock(refresh_token=None)
+    assert doctor.check_refresh(no_refresh).status is doctor.Status.WARN
+
+    offline = MagicMock(refresh_token="r")
+    offline.refresh.side_effect = TransportError("offline")
+    check = doctor.check_refresh(offline, request_factory=object)
+    assert check.status is doctor.Status.FAIL
+    assert "Could not reach Google" in check.detail
+
+
+def test_doctor_hints_at_logging_in_again_for_missing_scopes() -> None:
+    gateway = MagicMock()
+    gateway.list_calendars.side_effect = RuntimeError("insufficientPermissions")
+    [check] = doctor.check_calendars(gateway, CalendarSettings(), ical_source=False)
+    assert check.status is doctor.Status.FAIL
+    assert check.hint == doctor.LOGIN_AGAIN
