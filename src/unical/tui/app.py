@@ -41,7 +41,7 @@ from unical.profile import Profile, time_zone_error
 from unical.rules import Condition, Rule
 from unical.semesters import current_semester_window
 from unical.sync.models import CalendarInfo, SyncPlan, SyncResult
-from unical.sync.source import SourceCalendarNotFoundError, SourceError
+from unical.sync.source import EventSource, SourceCalendarNotFoundError, SourceError
 from unical.targets import SyncTarget
 from unical.tui.model import (
     ColorRow,
@@ -380,11 +380,7 @@ class UnicalApp(App[None]):
         self.calendars = setup.calendars
         self.ical_url = setup.ical_url
         """The saved iCal feed the events come from, if any."""
-        self.source = (
-            setup.ical_source_for(setup.ical_url)
-            if setup.ical_url is not None
-            else setup.source_for(setup.calendars.source)
-        )
+        self.source = self._source_for(setup.calendars.source, setup.ical_url)
         self.options = options
         self.profile: Profile | None = None
         self.draft: PreferencesDraft | None = None
@@ -1034,8 +1030,16 @@ class UnicalApp(App[None]):
             return f"Could not read the timetable at {mask_url(url)}: {exc}"
         return None
 
+    def _source_for(self, source_name: str | None, ical_url: str | None) -> EventSource:
+        """The events of the iCal feed at ``ical_url`` if given, else of the
+        calendar ``source_name``."""
+        if ical_url is not None:
+            return self.setup.ical_source_for(ical_url)
+        assert source_name is not None
+        return self.setup.source_for(source_name)
+
     @property
-    def _ical_source(self) -> bool:
+    def _reads_ical(self) -> bool:
         """True when the events come from an iCal feed, not a Google calendar."""
         return self.setup.fixed_source is not None or self.ical_url is not None
 
@@ -1062,8 +1066,8 @@ class UnicalApp(App[None]):
         explanation: str = "",
         new_name: str = "",
     ) -> CalendarPicker:
-        fixed = self._ical_source
-        choices = calendar_choices(calendars, role, self.calendars, fixed)
+        ical = self._reads_ical
+        choices = calendar_choices(calendars, role, self.calendars, ical)
         if role is Role.SOURCE:
             return CalendarPicker(
                 title or "Calendar to read from", choices, explanation=explanation
@@ -1075,7 +1079,7 @@ class UnicalApp(App[None]):
                 target_name_error,
                 calendars=calendars,
                 current=self.calendars,
-                fixed_source=fixed,
+                ical_source=ical,
             ),
             new_name=new_name,
             explanation=explanation,
@@ -1125,7 +1129,7 @@ class UnicalApp(App[None]):
                     "Pick one of your calendars, or keep the new name: the "
                     "calendar is created when you apply the changes."
                 ),
-                new_name=default_target_name(self.calendars, self._ical_source),
+                new_name=default_target_name(self.calendars, self._reads_ical),
             )
         )
         if target is None:
@@ -1305,12 +1309,11 @@ class UnicalApp(App[None]):
         """Loads the events, from the calendar ``source_name`` or the iCal feed
         at ``ical_url`` if given (then the new source), keeping the edits not
         saved yet."""
-        if ical_url is not None:
-            source = self.setup.ical_source_for(ical_url)
-        elif source_name is not None:
-            source = self.setup.source_for(source_name)
-        else:
-            source = self.source
+        source = (
+            self.source
+            if source_name is None and ical_url is None
+            else self._source_for(source_name, ical_url)
+        )
         self._set_busy(True)
         for table in self._ui.query(DataTable):
             table.loading = True

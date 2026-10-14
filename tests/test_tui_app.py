@@ -123,6 +123,13 @@ def make_app(
 
 
 def make_setup(gateway: FakeCalendarGateway, **kwargs: Any) -> CalendarSetup:
+    """A setup where the iCal feeds come from ``fetch_feed`` and the chosen
+    URL isn't saved."""
+    kwargs = {
+        "ical_source_for": lambda url: IcalFeedSource(url, fetch=fetch_feed),
+        "save_ical_url": lambda url: None,
+        **kwargs,
+    }
     return CalendarSetup(
         calendars=CalendarSettings(source="Src", target="Tgt"),
         source_for=lambda name: GoogleCalendarSource(gateway, name),
@@ -133,14 +140,8 @@ def make_setup(gateway: FakeCalendarGateway, **kwargs: Any) -> CalendarSetup:
 def ical_setup(
     gateway: FakeCalendarGateway, saved_urls: list[str | None], **kwargs: Any
 ) -> CalendarSetup:
-    """A setup where the iCal feeds come from ``fetch_feed`` and the saved URL
-    is recorded in ``saved_urls``."""
-    return make_setup(
-        gateway,
-        ical_source_for=lambda url: IcalFeedSource(url, fetch=fetch_feed),
-        save_ical_url=saved_urls.append,
-        **kwargs,
-    )
+    """Like :func:`make_setup`, recording the saved URL in ``saved_urls``."""
+    return make_setup(gateway, save_ical_url=saved_urls.append, **kwargs)
 
 
 def drive(app: UnicalApp, scenario: Scenario) -> None:
@@ -1068,11 +1069,7 @@ def test_ical_link_save_failure_is_reported(config: Config) -> None:
     def boom(url: str | None) -> None:
         raise OSError("read-only file system")
 
-    setup = make_setup(
-        gateway,
-        ical_source_for=lambda url: IcalFeedSource(url, fetch=fetch_feed),
-        save_ical_url=boom,
-    )
+    setup = make_setup(gateway, save_ical_url=boom)
     app = make_app(config, gateway, setup=setup)
 
     async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:

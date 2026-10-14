@@ -43,7 +43,7 @@ def test_target_choices() -> None:
 
 def test_with_an_ical_feed_the_source_calendar_can_be_the_target() -> None:
     current = CalendarSettings(source="me@example.com", target="Polimi Colored")
-    choices = calendar_choices(CALENDARS, Role.TARGET, current, fixed_source=True)
+    choices = calendar_choices(CALENDARS, Role.TARGET, current, ical_source=True)
     assert choices[0] == CalendarChoice("me@example.com", True, "primary")
 
 
@@ -65,11 +65,11 @@ def test_target_name_error(name: str, error: str | None) -> None:
 
 def test_target_name_can_be_the_source_calendar_with_an_ical_feed() -> None:
     current = CalendarSettings(source="Mine", target="Polimi Colored")
-    assert target_name_error("Mine", [], current, fixed_source=True) is None
+    assert target_name_error("Mine", [], current, ical_source=True) is None
 
 
 def test_with_an_ical_feed_no_source_calendar_is_current() -> None:
-    choices = calendar_choices(CALENDARS, Role.SOURCE, CURRENT, fixed_source=True)
+    choices = calendar_choices(CALENDARS, Role.SOURCE, CURRENT, ical_source=True)
     assert choices[1] == CalendarChoice("Polimi", True)
 
 

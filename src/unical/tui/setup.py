@@ -7,17 +7,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
-from unical.ical_source import IcalFeedSource
 from unical.profile import CalendarSettings
 from unical.sync.models import CalendarInfo
 from unical.sync.source import EventSource
 
 ICAL_TARGET_NAME = "University Timetable"
 """The target calendar suggested when the events come from an iCal feed."""
-
-
-def _forget(_: str | None) -> None:
-    pass
 
 
 class Role(Enum):
@@ -33,16 +28,16 @@ class CalendarSetup:
     """The calendars to start with (the profile's, with any override)."""
     source_for: Callable[[str], EventSource]
     """The events source for a source calendar name."""
+    ical_source_for: Callable[[str], EventSource]
+    """The events source for an iCal feed URL typed in the TUI."""
+    save_ical_url: Callable[[str | None], None]
+    """Saves the iCal feed URL chosen in the TUI (``None``: forgets it)."""
     fixed_source: str | None = None
     """Label of the iCal feed given with ``--ical`` or ``SOURCE_ICAL_URL``, if
     any. The source can't be changed from the TUI then."""
-    ical_source_for: Callable[[str], EventSource] = IcalFeedSource
-    """The events source for an iCal feed URL typed in the TUI."""
     ical_url: str | None = None
     """The saved iCal feed URL to read the events from, if any. Unlike
     ``fixed_source``, it can be changed from the TUI."""
-    save_ical_url: Callable[[str | None], None] = _forget
-    """Saves the iCal feed URL chosen in the TUI (``None``: forgets it)."""
     overrides: Mapping[Role, str] = field(default_factory=dict)
     """Environment variables that override the calendars saved in the profile."""
     first_run: bool = False
@@ -60,7 +55,7 @@ def calendar_choices(
     calendars: Sequence[CalendarInfo],
     role: Role,
     current: CalendarSettings,
-    fixed_source: bool = False,
+    ical_source: bool = False,
 ) -> list[CalendarChoice]:
     """The calendars to offer for ``role``, telling which can't be chosen.
 
@@ -77,7 +72,7 @@ def calendar_choices(
         notes: list[str] = []
         allowed = True
         if role is Role.SOURCE:
-            if calendar.name == current.source and not fixed_source:
+            if calendar.name == current.source and not ical_source:
                 notes.append("current")
             elif calendar.name == current.target:
                 allowed = False
@@ -85,7 +80,7 @@ def calendar_choices(
         else:
             if calendar.name == current.target:
                 notes.append("current")
-            if calendar.name == current.source and not fixed_source:
+            if calendar.name == current.source and not ical_source:
                 allowed = False
                 notes.append("the source calendar")
             elif not calendar.writable:
@@ -110,7 +105,7 @@ def target_name_error(
     name: str,
     calendars: Sequence[CalendarInfo],
     current: CalendarSettings,
-    fixed_source: bool = False,
+    ical_source: bool = False,
 ) -> str | None:
     """Why ``name`` can't be the target calendar, or ``None`` if it can.
 
@@ -120,7 +115,7 @@ def target_name_error(
     name = name.strip()
     if not name:
         return "Type a name for the calendar."
-    if name == current.source and not fixed_source:
+    if name == current.source and not ical_source:
         return "The target can't be the source calendar."
     for calendar in calendars:
         if calendar.name == name and not calendar.writable:
