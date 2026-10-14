@@ -255,6 +255,6 @@ def run_checks(
         checks.append(Check("Calendar API", Status.SKIP, "Needs a working login"))
         return checks
     checks.extend(
-        check_calendars(gateway_factory(creds), calendars, bool(config.source_ical_url))
+        check_calendars(gateway_factory(creds), calendars, bool(config.ical_url))
     )
     return checks

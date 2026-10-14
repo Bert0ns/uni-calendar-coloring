@@ -57,9 +57,9 @@ def default_credentials_path() -> Path:
     return resolve_config_path(None, CREDENTIALS_FILE)
 
 
-def default_ical_url_path() -> Path:
+def default_ical_url_path(config_dir: Path | None = None) -> Path:
     """Where the iCal feed URL chosen in the setup guide is saved."""
-    return default_config_dir() / ICAL_URL_FILE
+    return (config_dir or default_config_dir()) / ICAL_URL_FILE
 
 
 def load_saved_ical_url(path: Path) -> str | None:
@@ -79,10 +79,12 @@ def save_ical_url(url: str | None, path: Path) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # The file may have existed with other permissions: tighten them before
+    # writing the secret. No fchmod on older Windows Pythons.
+    with contextlib.suppress(OSError, AttributeError):
+        os.fchmod(fd, 0o600)
     with open(fd, "w", encoding="utf-8") as f:
         f.write(url.strip() + "\n")
-    with contextlib.suppress(OSError, NotImplementedError):
-        path.chmod(0o600)  # the file may have existed with other permissions
 
 
 @dataclass(frozen=True)
@@ -146,9 +148,7 @@ class Config:
             value = env.get(key, "").strip()
             return value or None
 
-        ical_url_path = (
-            config_dir if config_dir is not None else default_config_dir()
-        ) / ICAL_URL_FILE
+        ical_url_path = default_ical_url_path(config_dir)
         return cls(
             source_calendar_name=get("SOURCE_CALENDAR_NAME"),
             target_calendar_name=get("TARGET_CALENDAR_NAME"),

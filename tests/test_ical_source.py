@@ -248,9 +248,13 @@ def test_fetch_ical_rejects_unsupported_or_unsafe_schemes(invalid_url: str) -> N
     assert isinstance(exc_info.value, SourceError)
 
 
-@pytest.mark.parametrize(
-    "error", [urllib.error.URLError("boom"), TimeoutError(), ValueError("bad url")]
-)
+def test_fetch_ical_hides_the_token_of_a_malformed_url() -> None:
+    with pytest.raises(ICalError, match="Invalid iCal URL") as exc_info:
+        fetch_ical("https://example.com/feed/sec ret")
+    assert "sec" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("error", [urllib.error.URLError("boom"), TimeoutError()])
 def test_fetch_ical_wraps_network_errors(error: Exception) -> None:
     with (
         patch(

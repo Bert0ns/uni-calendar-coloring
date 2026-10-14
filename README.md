@@ -637,6 +637,9 @@ tab and choose what to sync, verbose output, or a dry run.
    | `TARGET_CALENDAR_NAME` | Optional, overrides the profile's target calendar.          |
    | `SOURCE_ICAL_URL`      | Optional. If set, it's used instead of the source calendar. |
 
+   If you pasted an iCal link in the setup guide, add it as `SOURCE_ICAL_URL`:
+   the guide saves it on your computer only, not in `profile.json`.
+
 After each run, the workflow commits the updated `profile.json` back to the
 repository, so colors you pick locally (and push) and colors the cloud run
 assigns stay in sync.

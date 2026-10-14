@@ -460,11 +460,11 @@ def run_tui(
 
     # The saved iCal feed can be changed from the TUI, unlike --ical and
     # SOURCE_ICAL_URL: the source calendars are Google calendars then.
-    explicit = replace(config, saved_ical_url=None)
+    without_saved_url = replace(config, saved_ical_url=None)
 
     def source_for(name: str) -> EventSource:
         return build_source(
-            explicit, replace(calendars, source=name), gateway, reporter
+            without_saved_url, replace(calendars, source=name), gateway, reporter
         )
 
     def ical_source_for(url: str) -> EventSource:

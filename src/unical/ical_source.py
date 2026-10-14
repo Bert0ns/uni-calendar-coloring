@@ -6,6 +6,7 @@ using only the standard library.
 
 from __future__ import annotations
 
+import http.client
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -64,7 +65,12 @@ def fetch_ical(url: str, timeout: int = DEFAULT_TIMEOUT) -> str:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body: bytes = response.read()
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+    except (ValueError, http.client.InvalidURL) as exc:
+        # Their message quotes the URL, token included.
+        raise ICalError(
+            f"Invalid iCal URL: '{mask_url(url)}' (check it has no spaces)"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
         raise ICalError(
             "Could not download iCal feed. Check the URL (it may have expired "
             f"or been revoked) and your network connection: {exc}"

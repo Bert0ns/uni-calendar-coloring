@@ -20,7 +20,7 @@ from unical.auth import (
     LoginRequiredError,
 )
 from unical.cli import main as cli
-from unical.config import Config
+from unical.config import Config, save_ical_url
 from unical.ical_source import IcalFeedSource, mask_url
 from unical.profile import CalendarSettings
 from unical.reporting import NullReporter
@@ -1005,10 +1005,15 @@ def test_doctor_calendar_lookups(doctor_env, capsys) -> None:
     assert "WARN  Target calendar: 'Colored' not found" in out
 
 
+@pytest.mark.parametrize("saved", [False, True], ids=["env", "saved"])
 def test_doctor_skips_the_source_calendar_for_ical(
-    doctor_env, monkeypatch, capsys
+    doctor_env, monkeypatch, capsys, saved: bool
 ) -> None:
-    monkeypatch.setenv("SOURCE_ICAL_URL", "https://example.com/feed.ics?token=x")
+    url = "https://example.com/feed.ics?token=x"
+    if saved:
+        save_ical_url(url, config_mod.default_ical_url_path())
+    else:
+        monkeypatch.setenv("SOURCE_ICAL_URL", url)
     del doctor_env.calendars["id::Uni"]
 
     assert cli.main(["doctor"]) == cli.EXIT_OK
