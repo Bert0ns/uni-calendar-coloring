@@ -17,6 +17,6 @@ env
 .env
 
 # Google API Credentials (CRITICAL - DO NOT COMMIT)
-credentials.json
+*credentials.json
 token.json
 token.pickle
