@@ -7,9 +7,17 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
+from unical.ical_source import IcalFeedSource
 from unical.profile import CalendarSettings
 from unical.sync.models import CalendarInfo
 from unical.sync.source import EventSource
+
+ICAL_TARGET_NAME = "University Timetable"
+"""The target calendar suggested when the events come from an iCal feed."""
+
+
+def _forget(_: str | None) -> None:
+    pass
 
 
 class Role(Enum):
@@ -26,8 +34,15 @@ class CalendarSetup:
     source_for: Callable[[str], EventSource]
     """The events source for a source calendar name."""
     fixed_source: str | None = None
-    """Label of the iCal feed used instead of a source calendar, if any. The
-    source can't be changed from the TUI then."""
+    """Label of the iCal feed given with ``--ical`` or ``SOURCE_ICAL_URL``, if
+    any. The source can't be changed from the TUI then."""
+    ical_source_for: Callable[[str], EventSource] = IcalFeedSource
+    """The events source for an iCal feed URL typed in the TUI."""
+    ical_url: str | None = None
+    """The saved iCal feed URL to read the events from, if any. Unlike
+    ``fixed_source``, it can be changed from the TUI."""
+    save_ical_url: Callable[[str | None], None] = _forget
+    """Saves the iCal feed URL chosen in the TUI (``None``: forgets it)."""
     overrides: Mapping[Role, str] = field(default_factory=dict)
     """Environment variables that override the calendars saved in the profile."""
     first_run: bool = False
@@ -62,7 +77,7 @@ def calendar_choices(
         notes: list[str] = []
         allowed = True
         if role is Role.SOURCE:
-            if calendar.name == current.source:
+            if calendar.name == current.source and not fixed_source:
                 notes.append("current")
             elif calendar.name == current.target:
                 allowed = False
@@ -82,6 +97,13 @@ def calendar_choices(
             notes.append(f"{counts[calendar.name]} calendars have this name")
         choices.append(CalendarChoice(calendar.name, allowed, ", ".join(notes)))
     return choices
+
+
+def default_target_name(current: CalendarSettings, ical_source: bool) -> str:
+    """The name suggested for a new target calendar."""
+    if ical_source:
+        return ICAL_TARGET_NAME
+    return f"{current.source} Colored"
 
 
 def target_name_error(

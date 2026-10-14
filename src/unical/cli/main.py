@@ -27,7 +27,7 @@ from unical.auth import (
 )
 from unical.cli.console import ConsoleReporter
 from unical.cli.prompts import InteractivePreferenceEditor
-from unical.config import Config
+from unical.config import Config, save_ical_url
 from unical.custom_events import (
     CustomEvent,
     adopt_target_event,
@@ -371,8 +371,8 @@ def build_source(
     gateway: CalendarGateway,
     reporter: Reporter,
 ) -> EventSource:
-    if config.source_ical_url:
-        return IcalFeedSource(config.source_ical_url, on_warning=reporter.warning)
+    if config.ical_url:
+        return IcalFeedSource(config.ical_url, on_warning=reporter.warning)
     return GoogleCalendarSource(gateway, calendars.source)
 
 
@@ -383,8 +383,8 @@ def describe_run(
     reporter: Reporter,
 ) -> None:
     reporter.detail(f"Profile: {config.profile_path}")
-    if config.source_ical_url:
-        reporter.detail(f"Source: iCal feed at {mask_url(config.source_ical_url)}")
+    if config.ical_url:
+        reporter.detail(f"Source: iCal feed at {mask_url(config.ical_url)}")
     else:
         reporter.detail(f"Source: Google Calendar '{calendars.source}'")
     reporter.detail(f"Target: Google Calendar '{calendars.target}'")
@@ -454,8 +454,17 @@ def run_tui(
     reporter = TuiReporter()
     calendars = calendars_to_sync(config)
 
+    # The saved iCal feed can be changed from the TUI, unlike --ical and
+    # SOURCE_ICAL_URL: the source calendars are Google calendars then.
+    explicit = replace(config, saved_ical_url=None)
+
     def source_for(name: str) -> EventSource:
-        return build_source(config, replace(calendars, source=name), gateway, reporter)
+        return build_source(
+            explicit, replace(calendars, source=name), gateway, reporter
+        )
+
+    def ical_source_for(url: str) -> EventSource:
+        return IcalFeedSource(url, on_warning=reporter.warning)
 
     overrides = {
         role: variable
@@ -473,6 +482,9 @@ def run_tui(
             if config.source_ical_url
             else None
         ),
+        ical_source_for=ical_source_for,
+        ical_url=None if config.source_ical_url else config.saved_ical_url,
+        save_ical_url=functools.partial(save_ical_url, path=config.saved_ical_url_path),
         overrides=overrides,
         first_run=not config.profile_path.exists(),
     )

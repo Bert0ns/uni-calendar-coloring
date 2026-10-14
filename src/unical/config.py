@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +14,9 @@ CREDENTIALS_FILE = "credentials.json"
 TOKEN_FILE = "token.json"
 LEGACY_TOKEN_FILE = "token.pickle"
 PROFILE_FILE = "profile.json"
+ICAL_URL_FILE = "ical_url.txt"
+"""The iCal feed URL chosen in the setup guide. Not in the profile: the URL
+holds a secret token, and the profile is meant to be shared."""
 
 
 def default_config_dir() -> Path:
@@ -52,6 +57,34 @@ def default_credentials_path() -> Path:
     return resolve_config_path(None, CREDENTIALS_FILE)
 
 
+def default_ical_url_path() -> Path:
+    """Where the iCal feed URL chosen in the setup guide is saved."""
+    return default_config_dir() / ICAL_URL_FILE
+
+
+def load_saved_ical_url(path: Path) -> str | None:
+    """The saved iCal feed URL, or ``None`` if there is none (or it can't be read)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return text.strip() or None
+
+
+def save_ical_url(url: str | None, path: Path) -> None:
+    """Saves the iCal feed URL, readable by the user only like the token;
+    ``None`` forgets it."""
+    if url is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with open(fd, "w", encoding="utf-8") as f:
+        f.write(url.strip() + "\n")
+    with contextlib.suppress(OSError, NotImplementedError):
+        path.chmod(0o600)  # the file may have existed with other permissions
+
+
 @dataclass(frozen=True)
 class Config:
     """Runtime configuration.
@@ -63,12 +96,18 @@ class Config:
 
     Everything about the calendar itself lives in the profile; the calendar
     names here only override it (e.g. from GitHub Actions secrets).
+
+    The iCal feed URL comes, in order, from ``--ical``, ``SOURCE_ICAL_URL``
+    (environment or ``.env``), then the file saved by the setup guide.
     """
 
     source_calendar_name: str | None = None
     target_calendar_name: str | None = None
     source_ical_url: str | None = None
     """When set, events are read from this iCal feed instead of a Google calendar."""
+    saved_ical_url: str | None = None
+    """The iCal feed URL saved by the setup guide, used if none is given."""
+    saved_ical_url_path: Path = field(default_factory=default_ical_url_path)
     credentials_path: Path = field(
         default_factory=lambda: resolve_config_path(None, CREDENTIALS_FILE)
     )
@@ -81,6 +120,11 @@ class Config:
     profile_path: Path = field(
         default_factory=lambda: resolve_config_path(None, PROFILE_FILE)
     )
+
+    @property
+    def ical_url(self) -> str | None:
+        """The iCal feed to read the events from, if any."""
+        return self.source_ical_url or self.saved_ical_url
 
     def calendars(self, saved: CalendarSettings) -> CalendarSettings:
         """The calendars to sync: the profile's, unless overridden."""
@@ -102,10 +146,15 @@ class Config:
             value = env.get(key, "").strip()
             return value or None
 
+        ical_url_path = (
+            config_dir if config_dir is not None else default_config_dir()
+        ) / ICAL_URL_FILE
         return cls(
             source_calendar_name=get("SOURCE_CALENDAR_NAME"),
             target_calendar_name=get("TARGET_CALENDAR_NAME"),
             source_ical_url=get("SOURCE_ICAL_URL"),
+            saved_ical_url=load_saved_ical_url(ical_url_path),
+            saved_ical_url_path=ical_url_path,
             credentials_path=resolve_config_path(
                 get("CREDENTIALS_PATH"),
                 CREDENTIALS_FILE,

@@ -1,4 +1,5 @@
-"""Screens of the first-run setup: a welcome, then a check of the rules.
+"""Screens of the first-run setup: a welcome, the source of the timetable,
+then a check of the rules.
 
 The calendar steps reuse :class:`~unical.tui.widgets.CalendarPicker`;
 the app drives the whole sequence.
@@ -6,13 +7,15 @@ the app drives the whole sequence.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import ClassVar
 
 from rich.text import Text
-from textual import events
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -99,7 +102,7 @@ class WizardIntro(ModalScreen[bool]):
                 "It copies your university timetable into a Google Calendar you "
                 "own, with a color for each course, your exams and your "
                 "deadlines.\n\nLet's set it up in three steps:\n"
-                "  1. the calendar with your timetable,\n"
+                "  1. where your timetable comes from,\n"
                 "  2. the calendar to write the colored copy to,\n"
                 "  3. how to recognize lectures, exams and deadlines.\n\n"
                 "Nothing is written to Google Calendar until you apply the "
@@ -120,6 +123,105 @@ class WizardIntro(ModalScreen[bool]):
 
     def action_skip(self) -> None:
         self.dismiss(False)
+
+
+@dataclass(frozen=True)
+class SourceChoice:
+    url: str | None = None
+    """The iCal feed URL to read the events from; ``None``: a Google calendar."""
+
+
+class WizardSource(ModalScreen[SourceChoice | None]):
+    """Asks where the timetable comes from: an iCal feed, checked before going
+    on, or a Google calendar. Dismisses with ``None`` when left (Escape)."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "Cancel")]
+    DEFAULT_CSS = (
+        _WIZARD_CSS.format(screen="WizardSource")
+        + """
+    WizardSource #ical-status {
+        margin: 1 0;
+    }
+    WizardSource #ical-status.error {
+        color: $error;
+    }
+    """
+    )
+
+    def __init__(
+        self,
+        check: Callable[[str], str | None],
+        title: str = "Step 1 · Where your timetable comes from",
+    ) -> None:
+        """``check`` tells why the feed at a URL can't be used, or ``None`` if
+        it can. It's slow (it downloads the feed): it runs in a thread."""
+        super().__init__()
+        self.check = check
+        self.title_text = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(Text(self.title_text, style="bold"))
+            yield Static(
+                "Paste the iCal or webcal link of your timetable (recommended): "
+                "your university's portal (e.g. Esse3, WeBeep, Canvas) shows it "
+                "under Export or Subscribe. The events are read straight from "
+                "it: no need to subscribe to it in Google Calendar, so there's "
+                "no copy of every event to hide next to the colored one.\n\n"
+                "Already subscribed to your timetable in Google Calendar? Pick "
+                "that calendar instead.",
+                classes="wizard-text",
+            )
+            yield Input(placeholder="https://… or webcal://…", id="ical-url")
+            yield Label("", id="ical-status")
+            with Horizontal():
+                yield Button("Use this link", id="source-ical", variant="primary")
+                yield Button("Pick a Google calendar", id="source-google")
+
+    def on_mount(self) -> None:
+        self.query_one("#ical-url", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self._check_url()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "source-ical":
+            self._check_url()
+        elif event.button.id == "source-google":
+            self.dismiss(SourceChoice())
+
+    def _show_status(self, text: str, error: bool = False) -> None:
+        status = self.query_one("#ical-status", Label)
+        status.update(text)
+        status.set_class(error, "error")
+
+    @work(exclusive=True)
+    async def _check_url(self) -> None:
+        url = self.query_one("#ical-url", Input).value.strip()
+        if not url:
+            self._show_status(
+                "Paste the link of your timetable, or pick a Google calendar.",
+                error=True,
+            )
+            return
+        self._show_status("Downloading the timetable…")
+        buttons = list(self.query(Button).results(Button))
+        for button in buttons:
+            button.disabled = True
+        try:
+            error = await asyncio.to_thread(self.check, url)
+        finally:
+            for button in buttons:
+                button.disabled = False
+        if error is not None:
+            self._show_status(error, error=True)
+            return
+        self.dismiss(SourceChoice(url))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class RulesChoice(Enum):

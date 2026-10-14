@@ -198,7 +198,9 @@ open by hand.
 When there is no `profile.json` yet, the [terminal UI](#terminal-ui) opens a
 short guide:
 
-1. **The calendar with your timetable**: pick it from your Google calendars.
+1. **Where your timetable comes from**: paste its iCal or `webcal://` link
+   (recommended, see [Use an iCal URL as the source](#use-an-ical-url-as-the-source)),
+   or pick the calendar you subscribed to in Google Calendar.
 2. **The calendar to write to**: pick one, or keep the suggested new name. A new
    calendar is only created when you apply the changes.
 3. **Recognizing your events**: see how the built-in Politecnico di Milano rules
@@ -343,7 +345,8 @@ color you picked for the exam is kept. Applying saves your preferences, just
 like a normal sync. If you edit something after a preview, preview again before
 applying.
 
-With an iCal URL the source can't be changed in the Setup tab. If
+The source can be changed in the Setup tab, except when the iCal URL is given
+with `--ical` or `SOURCE_ICAL_URL`. If
 `SOURCE_CALENDAR_NAME` or `TARGET_CALENDAR_NAME` is set, it replaces the saved
 calendar every time the tool starts, and the tab says so.
 
@@ -362,18 +365,29 @@ dates of the same exam with no saved choice reuse your first answer. Add
 
 ### Use an iCal URL as the source
 
-You can read events straight from your personal iCal feed (e.g. from your
-university app) instead of a Google calendar:
+You can read events straight from your personal iCal feed (e.g. from Esse3,
+WeBeep or Canvas, often under _Export_ or _Subscribe_) instead of a Google
+calendar. It's the cleanest option: there is no subscribed calendar in Google
+Calendar, so no copy of every event to hide next to the colored one.
+
+The easiest way is to paste the link in the first-run guide, or later with
+**Change…** next to the source in the Setup tab. `https://` and `webcal://`
+links both work; the tool downloads the feed to check it before using it. The
+link is saved in `ical_url.txt` in the user config directory (e.g.
+`~/.config/unical/` on Linux), readable by you only, and used on every run.
+
+You can also give it on the command line, or set it in `.env`:
 
 ```bash
 unical --ical "https://ical.example.com/<id>/<token>"
 ```
 
-Or set it once in `.env`, where it takes precedence over the source calendar:
-
 ```bash
 SOURCE_ICAL_URL="https://ical.example.com/<id>/<token>"
 ```
+
+The first one found wins: `--ical`, then `SOURCE_ICAL_URL`, then the saved
+link. Any of them takes precedence over the source calendar of the profile.
 
 Recurring events (`RRULE`/`EXDATE`) are passed to Google, which expands them.
 Rules can match the feed's `CATEGORIES` with `"field": "category"`. The built-in
@@ -382,8 +396,8 @@ are missing.
 
 > [!WARNING]
 > Treat the iCal URL like a password: anyone who has it can read your timetable.
-> Keep it in `.env` (which is gitignored) or in a CI secret, never in
-> `profile.json`. The tool never logs it; `-v` shows only the host with the
+> Keep it in the saved file, in `.env` (which is gitignored) or in a CI secret,
+> never in `profile.json`. The tool never logs it; `-v` shows only the host with the
 > token redacted.
 
 ### Command reference
@@ -546,7 +560,7 @@ are resolved in this order:
 | `PROFILE_PATH`         | `profile.json` or config dir     | The profile.                                    |
 | `SOURCE_CALENDAR_NAME` | _(the profile's)_                | Overrides the calendar to read from.            |
 | `TARGET_CALENDAR_NAME` | _(the profile's)_                | Overrides the calendar to write to.             |
-| `SOURCE_ICAL_URL`      | _(unset)_                        | Read from this iCal feed instead of a calendar. |
+| `SOURCE_ICAL_URL`      | _(the link saved by the guide)_  | Read from this iCal feed instead of a calendar. |
 | `CREDENTIALS_PATH`     | `credentials.json` or config dir | OAuth client downloaded from Google Cloud.      |
 | `TOKEN_PATH`           | `token.json` or config dir       | Cached Google login.                            |
 | `UNICAL_NO_UPDATE_CHECK`| `0`                              | Set to `1` or `true` to disable version checks. |

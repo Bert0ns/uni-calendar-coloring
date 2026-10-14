@@ -267,8 +267,16 @@ class IcalFeedSource:
         time_min: date | None = None,
         time_max: date | None = None,
     ) -> list[Event]:
+        text = self._fetch(self.url)
+        if "BEGIN:VCALENDAR" not in text.upper():
+            # e.g. a login page: reading it as an empty calendar would delete
+            # every synced event.
+            raise ICalError(
+                f"'{mask_url(self.url)}' is not an iCal feed: copy the link of "
+                "the calendar export (it often ends in .ics)."
+            )
         return parse_ical(
-            self._fetch(self.url),
+            text,
             self._default_tz,
             self._on_warning,
             time_min=time_min,

@@ -294,3 +294,21 @@ def test_parse_ical_filters_by_time_min_and_time_max() -> None:
 
     only_before = parse_ical(SAMPLE_ICAL, time_max=date(2026, 9, 15))
     assert [e["id"] for e in only_before] == ["1144126-polimi.it"]
+
+
+def test_ical_feed_source_rejects_what_is_not_a_feed() -> None:
+    source = IcalFeedSource(
+        "https://example.com/secret-token",
+        fetch=lambda url: "<html><body>Please log in</body></html>",
+    )
+    with pytest.raises(ICalError, match="is not an iCal feed") as exc_info:
+        source.fetch_events()
+    assert "secret" not in str(exc_info.value)
+
+
+def test_ical_feed_source_accepts_an_empty_calendar() -> None:
+    source = IcalFeedSource(
+        "https://example.com/feed.ics",
+        fetch=lambda url: "begin:vcalendar\nend:vcalendar\n",
+    )
+    assert source.fetch_events() == []
