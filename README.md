@@ -259,7 +259,34 @@ unical auth import /path/to/downloaded-credentials.json   # copy credentials to 
 unical auth import /path/to/credentials.json -m           # move instead of copy
 unical auth status                                        # inspect credentials, token cache, and profile status
 unical auth login                                         # authenticate with Google and cache token in advance
+unical doctor                                             # diagnose the whole setup, including the connection to Google
 ```
+
+Before opening the browser, `unical auth login` reminds you that a
+`403 access_denied` page from Google means your address is missing under
+**Test users** on the
+[OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent).
+Google shows that error in the browser, so the tool can't detect it: if the
+login doesn't finish within 5 minutes, it gives up with the same hint. If you
+click **Cancel** on Google's page, the login stops with an explanation instead of
+retrying.
+
+> If your university Google Workspace account can't create Google Cloud projects
+> or OAuth clients, create them with a personal `@gmail.com` account instead.
+
+`unical doctor` checks everything a sync needs, without logging in through the
+browser, and reports each check as pass, warn, fail or skip:
+
+- the config directory and the profile, credentials and token paths;
+- the format of `credentials.json`: a Desktop app client passes; a Web
+  application client gets a warning (its login fails with
+  `redirect_uri_mismatch`); a service account key or a malformed file fails;
+- the saved login: whether it exists and has the Calendar scope, when it
+  expires, and whether it can still be refreshed;
+- access to the Google Calendar API;
+- that the source calendar exists and that the target calendar is writable.
+
+It exits with code 1 if any check fails, so you can use it in scripts and CI.
 
 ### Version and updates
 
@@ -418,6 +445,15 @@ unical [all|exams|lectures|deadlines] [options]
 | `-V`, `--version`                                 | Show version number and exit.                                                         |
 | `--check-update`                                  | Check online for a newer version of unical and exit.                                  |
 | `--no-update-check`                               | Do not check online for updates.                                                      |
+
+| Subcommand                               | Description                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------------ |
+| `unical auth import [FILE]`              | Validate and copy (`-m`: move) an OAuth client JSON into the config directory.       |
+| `unical auth status`                     | Show the credentials, token and profile paths and their status.                      |
+| `unical auth login`                      | Log in with Google in the browser and save the token.                                |
+| `unical doctor`                          | Check the setup and the connection to Google without logging in. Exits 1 on failure. |
+| `unical events list\|add\|delete\|adopt` | Manage custom events.                                                                |
+| `unical version [--no-check]`            | Show the version and check for updates.                                              |
 
 ## Profile and rules
 
@@ -601,7 +637,12 @@ assigns stay in sync.
 
 | Problem                                                   | Fix                                                                                                          |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Not sure what's wrong                                     | Run `unical doctor`: it checks credentials, login, API access and calendars, and says how to fix each issue. |
 | `403 access_denied` when logging in                       | Add your Google address as a **Test user** on the OAuth consent screen.                                      |
+| `Google login was cancelled or denied (access_denied)`    | You clicked Cancel, or your address isn't a **Test user**. Fix that, then run `unical auth login`.           |
+| `Timed out after 5 minutes waiting for the Google login`  | Google probably showed an error page. Check the Test users list, then run `unical auth login` again.         |
+| `Error 400: redirect_uri_mismatch` in the browser         | The OAuth client is a Web application. Create a **Desktop app** client and run `unical auth import` again.   |
+| Can't create a project or OAuth client                    | Your university Workspace account may block it: use a personal `@gmail.com` account for Google Cloud.        |
 | `OAuth client file 'credentials.json' not found`          | Download the Desktop OAuth client JSON and save it as `credentials.json`, or point `CREDENTIALS_PATH` to it. |
 | `Source calendar '…' not found`                           | The source calendar in `profile.json` must match the name exactly as shown in Google Calendar.               |
 | Every event shows up twice                                | Hide the original calendar in Google Calendar.                                                               |

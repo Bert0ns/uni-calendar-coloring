@@ -9,6 +9,7 @@ import pickle
 import shutil
 import urllib.parse
 import warnings
+import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -16,11 +17,28 @@ from typing import Any
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, WSGITimeoutError
+from oauthlib.oauth2.rfc6749.errors import AccessDeniedError, OAuth2Error
 
 from unical.config import default_credentials_path
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+CONSENT_SCREEN_URL = "https://console.cloud.google.com/apis/credentials/consent"
+LOGIN_TIMEOUT_SECONDS = 300
+
+TEST_USERS_HINT = (
+    "If Google shows '403 access_denied', add your Google address under "
+    f"Test users on the OAuth consent screen: {CONSENT_SCREEN_URL}"
+)
+PERSONAL_ACCOUNT_HINT = (
+    "If your university Google Workspace account can't create projects or "
+    "OAuth clients, create them with a personal @gmail.com account instead."
+)
+WEB_CLIENT_HINT = (
+    "The OAuth client is a 'Web application': the login will fail with "
+    "'redirect_uri_mismatch'. Create an OAuth client ID of type 'Desktop app' "
+    "and import that instead."
+)
 
 
 class CredentialsFileNotFoundError(FileNotFoundError):
@@ -42,6 +60,10 @@ class LoginRequiredError(RuntimeError):
 
 class InvalidCredentialsError(ValueError):
     """The provided credentials file does not contain a valid OAuth client configuration."""
+
+
+class LoginFailedError(RuntimeError):
+    """The browser login did not complete; the message says what to do."""
 
 
 def clean_path_input(raw: str) -> Path:
@@ -117,6 +139,21 @@ def validate_client_secrets(
     return data
 
 
+def oauth_client_type(data: dict[str, Any]) -> str:
+    """'installed' (Desktop app) or 'web', for data accepted by
+    :func:`validate_client_secrets`."""
+    return "installed" if data.get("installed") else "web"
+
+
+def is_web_client(credentials_path: Path) -> bool:
+    """True if the file is a valid 'Web application' OAuth client."""
+    try:
+        data = validate_client_secrets(credentials_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, InvalidCredentialsError):
+        return False
+    return oauth_client_type(data) == "web"
+
+
 def import_credentials(
     source: Path | str, destination: Path | None = None, move: bool = False
 ) -> Path:
@@ -147,13 +184,34 @@ def import_credentials(
     return dest_path
 
 
-def _run_installed_app_flow(credentials_path: Path) -> Any:
+def _run_installed_app_flow(
+    credentials_path: Path, timeout_seconds: int = LOGIN_TIMEOUT_SECONDS
+) -> Any:
     flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
     try:
-        return flow.run_local_server(port=0)
-    except Exception:
-        # No usable browser (e.g. WSL/SSH): print the URL to open manually.
-        return flow.run_local_server(port=0, open_browser=False)
+        try:
+            return flow.run_local_server(port=0, timeout_seconds=timeout_seconds)
+        except webbrowser.Error:
+            # No usable browser (e.g. WSL/SSH): print the URL to open manually.
+            return flow.run_local_server(
+                port=0, open_browser=False, timeout_seconds=timeout_seconds
+            )
+    except AccessDeniedError as exc:
+        raise LoginFailedError(
+            "Google login was cancelled or denied (access_denied). If you didn't "
+            "cancel it, add your Google address under Test users on the OAuth "
+            f"consent screen: {CONSENT_SCREEN_URL}"
+        ) from exc
+    except WSGITimeoutError as exc:
+        raise LoginFailedError(
+            f"Timed out after {timeout_seconds // 60} minutes waiting for the Google "
+            f"login to finish. {TEST_USERS_HINT}"
+        ) from exc
+    except OAuth2Error as exc:
+        raise LoginFailedError(
+            f"Google login failed: {exc}. Check that the OAuth client is a "
+            "'Desktop app' ('unical doctor' checks it)."
+        ) from exc
 
 
 class Authenticator:
@@ -200,7 +258,10 @@ class Authenticator:
                 raise CredentialsFileNotFoundError(self.credentials_path)
             if not self.allow_browser_login:
                 raise LoginRequiredError()
+            if is_web_client(self.credentials_path):
+                self._on_info(WEB_CLIENT_HINT)
             self._on_info("Opening the browser to log in with Google...")
+            self._on_info(TEST_USERS_HINT)
             creds = self._login(self.credentials_path)
 
         self._save(creds)
