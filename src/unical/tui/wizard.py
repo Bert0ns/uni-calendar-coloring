@@ -20,6 +20,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Label, Static
 
 from unical.auth import (
+    PERSONAL_ACCOUNT_HINT,
     InvalidCredentialsError,
     import_credentials,
 )
@@ -216,7 +217,8 @@ class WizardCredentials(ModalScreen[Path | None]):
                 '  2. Enable the [link="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"]Google Calendar API[/link].\n'
                 '  3. Configure the [link="https://console.cloud.google.com/apis/credentials/consent"]OAuth consent screen[/link] (choose External, add your Google account under Test users).\n'
                 '  4. Under [link="https://console.cloud.google.com/apis/credentials"]Credentials[/link] → Create credentials → OAuth client ID:\n'
-                "     choose [b]Desktop app[/b] and download the JSON file.\n",
+                "     choose [b]Desktop app[/b] and download the JSON file.\n\n"
+                f"{PERSONAL_ACCOUNT_HINT}\n",
                 classes="wizard-text",
             )
             yield Label(

@@ -2,20 +2,25 @@ import json
 import os
 import pickle
 import stat
+import webbrowser
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from google.auth.exceptions import RefreshError
+from google_auth_oauthlib.flow import WSGITimeoutError
+from oauthlib.oauth2.rfc6749.errors import AccessDeniedError, MismatchingStateError
 
 from unical import auth
 from unical.auth import (
     Authenticator,
     CredentialsFileNotFoundError,
     InvalidCredentialsError,
+    LoginFailedError,
     LoginRequiredError,
     clean_path_input,
     import_credentials,
+    oauth_client_type,
     validate_client_secrets,
 )
 
@@ -239,19 +244,93 @@ def test_announces_browser_login(paths) -> None:
     assert any("Opening the browser" in m for m in messages)
 
 
-def test_login_flow_falls_back_to_manual_url_without_browser(monkeypatch) -> None:
+@pytest.fixture
+def flow(monkeypatch):
+    """Patches the OAuth flow built from the client secrets file."""
     flow = MagicMock()
-    flow.run_local_server.side_effect = [RuntimeError("no browser"), "creds"]
     from_file = MagicMock(return_value=flow)
     monkeypatch.setattr(auth.InstalledAppFlow, "from_client_secrets_file", from_file)
+    flow.from_file = from_file
+    return flow
+
+
+def test_login_flow_falls_back_to_manual_url_without_browser(flow) -> None:
+    flow.run_local_server.side_effect = [webbrowser.Error("no browser"), "creds"]
 
     assert auth._run_installed_app_flow(Path("credentials.json")) == "creds"
 
-    from_file.assert_called_once_with("credentials.json", auth.SCOPES)
+    flow.from_file.assert_called_once_with("credentials.json", auth.SCOPES)
+    assert flow.run_local_server.call_args_list[0].kwargs == {
+        "port": 0,
+        "timeout_seconds": auth.LOGIN_TIMEOUT_SECONDS,
+    }
     assert flow.run_local_server.call_args_list[1].kwargs == {
         "port": 0,
         "open_browser": False,
+        "timeout_seconds": auth.LOGIN_TIMEOUT_SECONDS,
     }
+
+
+def test_access_denied_does_not_start_a_second_login(flow) -> None:
+    flow.run_local_server.side_effect = AccessDeniedError()
+
+    with pytest.raises(LoginFailedError) as exc_info:
+        auth._run_installed_app_flow(Path("credentials.json"))
+
+    assert flow.run_local_server.call_count == 1
+    assert "access_denied" in str(exc_info.value)
+    assert auth.CONSENT_SCREEN_URL in str(exc_info.value)
+
+
+def test_other_oauth_errors_are_reported_without_retrying(flow) -> None:
+    flow.run_local_server.side_effect = MismatchingStateError()
+
+    with pytest.raises(LoginFailedError, match="Google login failed") as exc_info:
+        auth._run_installed_app_flow(Path("credentials.json"))
+
+    assert flow.run_local_server.call_count == 1
+    assert "Desktop app" in str(exc_info.value)
+
+
+def test_unexpected_errors_are_not_retried(flow) -> None:
+    flow.run_local_server.side_effect = OSError("port in use")
+
+    with pytest.raises(OSError, match="port in use"):
+        auth._run_installed_app_flow(Path("credentials.json"))
+    assert flow.run_local_server.call_count == 1
+
+
+def test_login_times_out_with_a_hint(flow) -> None:
+    flow.run_local_server.side_effect = WSGITimeoutError("timed out")
+
+    with pytest.raises(LoginFailedError, match="Timed out after 2 minutes") as exc:
+        auth._run_installed_app_flow(Path("credentials.json"), timeout_seconds=120)
+
+    assert "Test users" in str(exc.value)
+    assert flow.run_local_server.call_args.kwargs["timeout_seconds"] == 120
+
+
+def test_hints_at_test_users_before_opening_the_browser(paths) -> None:
+    messages: list[str] = []
+    authenticator, _ = make_auth(paths, info=messages)
+    authenticator.get_credentials()
+    assert any("403 access_denied" in m and "Test users" in m for m in messages)
+    assert not any("Web application" in m for m in messages)
+
+
+def test_warns_about_web_clients_before_opening_the_browser(paths) -> None:
+    paths[0].write_text(
+        json.dumps({"web": {"client_id": "id", "client_secret": "secret"}})
+    )
+    messages: list[str] = []
+    authenticator, _ = make_auth(paths, info=messages)
+    authenticator.get_credentials()
+    assert any("redirect_uri_mismatch" in m for m in messages)
+
+
+def test_oauth_client_type() -> None:
+    assert oauth_client_type({"installed": {"client_id": "c"}}) == "installed"
+    assert oauth_client_type({"web": {"client_id": "c"}}) == "web"
 
 
 # -- Credential validation, cleaning, and import --------------------------------

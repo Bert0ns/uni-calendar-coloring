@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import functools
 import importlib.util
-import json
 import os
 import sys
 from collections.abc import Callable, Sequence
@@ -19,9 +18,11 @@ from google.auth.exceptions import GoogleAuthError
 
 from unical import __version__
 from unical.auth import (
+    PERSONAL_ACCOUNT_HINT,
     Authenticator,
     CredentialsFileNotFoundError,
     InvalidCredentialsError,
+    LoginFailedError,
     LoginRequiredError,
     import_credentials,
 )
@@ -34,6 +35,7 @@ from unical.custom_events import (
     is_custom_event,
     sanitize_custom_id,
 )
+from unical.doctor import Check, Status, check_credentials, load_token, run_checks
 from unical.events import Event, summary_of
 from unical.google_client import GoogleCalendarClient
 from unical.ical_source import IcalFeedSource, mask_url
@@ -91,7 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="unical",
         description="Sync and color Google Calendar events.\n"
-        "Use 'unical auth' to manage credentials and 'unical events' for custom events.",
+        "Use 'unical auth' to manage credentials, 'unical events' for custom events "
+        "and 'unical doctor' to diagnose setup problems.",
     )
     parser.add_argument(
         "target",
@@ -498,8 +501,21 @@ def credentials_help(path: Path) -> list[str]:
         "  4. APIs & Services → Credentials → Create credentials → OAuth client ID:",
         "     choose Desktop app and download the JSON file.",
         f"  5. Save it as '{path}' (or run 'unical auth import /path/to/downloaded-credentials.json').",
+        PERSONAL_ACCOUNT_HINT,
         "Details: https://github.com/Bert0ns/uni-calendar-coloring#setup",
     ]
+
+
+def report_auth_failure(exc: Exception, reporter: Reporter) -> None:
+    """Reports a failed login with what to do next."""
+    message = str(exc).strip()
+    reporter.error(
+        f"Authentication failed: {message}" if message else "Authentication failed."
+    )
+    reporter.info(
+        "Run 'unical auth login' to re-authenticate, or check your credentials and internet connection."
+    )
+    reporter.info("Run 'unical doctor' to check your setup.")
 
 
 def run_cli_credentials_onboarding(
@@ -521,7 +537,8 @@ def run_cli_credentials_onboarding(
         "  3. Configure OAuth consent screen (External, add yourself as Test user):\n"
         "     https://console.cloud.google.com/apis/credentials/consent\n"
         "  4. Create Credentials → OAuth client ID → Desktop app, and download the JSON:\n"
-        "     https://console.cloud.google.com/apis/credentials\n"
+        "     https://console.cloud.google.com/apis/credentials\n\n"
+        f"{PERSONAL_ACCOUNT_HINT}\n"
     )
     reporter.info("=" * 72)
 
@@ -605,46 +622,15 @@ def main_auth(
         elif is_fresh and cache_ver:
             reporter.info("Update status:           Up to date")
         reporter.info(f"Credentials path:        {config.credentials_path}")
-        if config.credentials_path.exists():
-            try:
-                content = config.credentials_path.read_text(encoding="utf-8")
-                data = json.loads(content)
-                client_type = (
-                    "installed"
-                    if "installed" in data
-                    else ("web" if "web" in data else "unknown")
-                )
-                client_info = data.get(client_type, {})
-                client_id = client_info.get("client_id", "unknown")
-                reporter.info(f"  Status: Configured ({client_type} app)")
-                reporter.info(f"  Client ID: {client_id}")
-            except Exception as exc:
-                reporter.info(f"  Status: Present but invalid ({exc})")
-        else:
-            reporter.info("  Status: Missing (run 'unical auth import' to configure)")
-
+        _report_status(check_credentials(config.credentials_path), reporter)
         reporter.info(f"Token cache path:        {config.token_path}")
-        if config.token_path.exists():
-            try:
-                from google.oauth2.credentials import Credentials
-
-                creds = Credentials.from_authorized_user_file(str(config.token_path))  # type: ignore[no-untyped-call]
-                if creds.valid:
-                    reporter.info("  Status: Logged in (token valid)")
-                elif creds.expired:
-                    reporter.info("  Status: Token expired (will refresh on next run)")
-                else:
-                    reporter.info("  Status: Logged in")
-            except Exception:
-                reporter.info("  Status: Token file present (could not parse)")
-        else:
-            reporter.info("  Status: Not logged in (token not found)")
-
+        _report_status(load_token(config.token_path)[0], reporter)
         reporter.info(f"Profile path:            {config.profile_path}")
         if config.profile_path.exists():
             reporter.info("  Status: Present")
         else:
             reporter.info("  Status: Not found (will be created on first setup)")
+        reporter.info("Run 'unical doctor' to also check the connection to Google.")
 
         return EXIT_OK
 
@@ -676,11 +662,67 @@ def main_auth(
                 f"✔ Successfully authenticated! Token saved to '{config.token_path}'."
             )
             return EXIT_OK
+        except (LoginFailedError, InvalidCredentialsError, GoogleAuthError) as exc:
+            report_auth_failure(exc, reporter)
+            return EXIT_FAILURE
         except Exception as exc:
             reporter.error(str(exc))
             return EXIT_FAILURE
 
     return EXIT_OK
+
+
+def _report_status(check: Check, reporter: Reporter) -> None:
+    reporter.info(f"  Status: {check.detail}")
+    if check.hint:
+        reporter.info(f"  {check.hint}")
+
+
+_DOCTOR_LABELS = {
+    Status.PASS: "✔ PASS",
+    Status.WARN: "WARN",
+    Status.FAIL: "FAIL",
+    Status.SKIP: "- SKIP",
+}
+
+
+def main_doctor(
+    argv: Sequence[str],
+    config: Config,
+    reporter: Reporter,
+    gateway_factory: Callable[[Any], CalendarGateway] | None = None,
+) -> int:
+    """Handler for 'unical doctor': checks the setup without logging in."""
+    argparse.ArgumentParser(
+        prog="unical doctor",
+        description="Check the configuration, credentials, login and calendars. "
+        "Never opens the browser. Exits with 1 if a check fails.",
+    ).parse_args(argv)
+
+    checks = run_checks(
+        config,
+        calendars_to_sync(config),
+        gateway_factory or GoogleCalendarClient.from_credentials,
+    )
+    for check in checks:
+        line = f"{_DOCTOR_LABELS[check.status]}  {check.name}: {check.detail}"
+        if check.status is Status.FAIL:
+            reporter.error(line)
+        elif check.status is Status.WARN:
+            reporter.warning(line)
+        else:
+            reporter.info(line)
+        if check.hint:
+            reporter.info(f"    → {check.hint}")
+
+    counts = {status: 0 for status in Status}
+    for check in checks:
+        counts[check.status] += 1
+    reporter.info(
+        f"{counts[Status.PASS]} passed, {counts[Status.WARN]} warnings, "
+        f"{counts[Status.FAIL]} failed, {counts[Status.SKIP]} skipped."
+    )
+    return EXIT_FAILURE if counts[Status.FAIL] else EXIT_OK
 
 
 def _get_gateway(config: Config, reporter: Reporter) -> CalendarGateway | None:
@@ -694,6 +736,9 @@ def _get_gateway(config: Config, reporter: Reporter) -> CalendarGateway | None:
     try:
         credentials = authenticator.get_credentials()
         return GoogleCalendarClient.from_credentials(credentials)
+    except (LoginFailedError, InvalidCredentialsError, GoogleAuthError) as exc:
+        report_auth_failure(exc, reporter)
+        return None
     except Exception as exc:
         reporter.error(str(exc))
         return None
@@ -1012,6 +1057,14 @@ def main(
         )
         return main_auth(raw_argv[1:], config, reporter, prompt_fn=prompt_fn)
 
+    if raw_argv and raw_argv[0] == "doctor":
+        reporter = ConsoleReporter(
+            verbose=False,
+            quiet=False,
+            write=functools.partial(print, flush=True),
+        )
+        return main_doctor(raw_argv[1:], config, reporter)
+
     if raw_argv and raw_argv[0] == "events":
         reporter = ConsoleReporter(
             verbose=False,
@@ -1091,17 +1144,12 @@ def main(
                 )
                 try:
                     credentials = authenticator.get_credentials()
-                except (InvalidCredentialsError, GoogleAuthError) as auth_exc:
-                    message = str(auth_exc).strip()
-                    error_msg = (
-                        f"Authentication failed: {message}"
-                        if message
-                        else "Authentication failed."
-                    )
-                    reporter.error(error_msg)
-                    reporter.info(
-                        "Run 'unical auth login' to re-authenticate, or check your credentials and internet connection."
-                    )
+                except (
+                    LoginFailedError,
+                    InvalidCredentialsError,
+                    GoogleAuthError,
+                ) as auth_exc:
+                    report_auth_failure(auth_exc, reporter)
                     return EXIT_FAILURE
                 except Exception as auth_exc:
                     reporter.error(str(auth_exc))
@@ -1116,15 +1164,8 @@ def main(
     except LoginRequiredError as exc:
         reporter.error(str(exc))
         return EXIT_FAILURE
-    except (InvalidCredentialsError, GoogleAuthError) as exc:
-        message = str(exc).strip()
-        error_msg = (
-            f"Authentication failed: {message}" if message else "Authentication failed."
-        )
-        reporter.error(error_msg)
-        reporter.info(
-            "Run 'unical auth login' to re-authenticate, or check your credentials and internet connection."
-        )
+    except (LoginFailedError, InvalidCredentialsError, GoogleAuthError) as exc:
+        report_auth_failure(exc, reporter)
         return EXIT_FAILURE
 
     gateway = GoogleCalendarClient.from_credentials(credentials)
