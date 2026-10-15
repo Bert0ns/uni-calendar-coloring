@@ -202,9 +202,7 @@ class PreferencesDraft:
         else:
             status = ItemStatus.UNSET
 
-        other_session = is_subscribed_to_other_session(
-            exam, applied, subscribed_titles
-        )
+        other_session = is_subscribed_to_other_session(exam, applied, subscribed_titles)
         other_same_day = False
         if other_session:
             base_date = exam.date.split(" ")[0]

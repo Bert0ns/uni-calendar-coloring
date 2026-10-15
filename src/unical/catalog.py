@@ -60,7 +60,9 @@ def discover(events: Iterable[Event], classifier: Classifier) -> Catalog:
         group_key = (classification.name, d_str)
         distinct_times = times_by_group.get(group_key, set())
         t = start_time(event)
-        date_label = f"{d_str} {t}" if len(distinct_times) > 1 and t is not None else d_str
+        date_label = (
+            f"{d_str} {t}" if len(distinct_times) > 1 and t is not None else d_str
+        )
         exams.append(
             ExamOccurrence(
                 title=classification.name,
