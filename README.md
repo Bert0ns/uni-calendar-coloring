@@ -373,6 +373,7 @@ The **Status** column shows where each value comes from:
 | `Ctrl+S`      | Save rules and preferences without syncing     |
 | `p`           | Preview the changes                            |
 | `a`           | Apply the previewed changes                    |
+| `r`           | Refresh the source calendar                    |
 | `n`           | New rule (Rules tab)                           |
 | `e` / `Enter` | Edit the selected rule (Rules tab)             |
 | `d`           | Delete the selected rule (Rules tab)           |
@@ -384,8 +385,9 @@ color you picked for the exam is kept. Applying saves your preferences, just
 like a normal sync. If you edit something after a preview, preview again before
 applying.
 
-The source can be changed in the Setup tab, except when the iCal URL is given
-with `--ical` or `SOURCE_ICAL_URL`. If
+The source can be refreshed or changed in the Setup tab, except when the iCal
+URL is given with `--ical` or `SOURCE_ICAL_URL` (which can still be refreshed,
+but not changed). If
 `SOURCE_CALENDAR_NAME` or `TARGET_CALENDAR_NAME` is set, it replaces the saved
 calendar every time the tool starts, and the tab says so.
 
