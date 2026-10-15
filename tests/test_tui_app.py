@@ -30,7 +30,7 @@ from unical.palette import GoogleColor
 from unical.profile import CalendarSettings
 from unical.rules import EventKind, MatchKind
 from unical.suggestions import suggest_color
-from unical.sync.models import Mutation, MutationAction, SyncPlan
+from unical.sync.models import CalendarInfo, Mutation, MutationAction, SyncPlan
 from unical.sync.source import GoogleCalendarSource
 from unical.targets import SyncTarget
 from unical.tui.app import (
@@ -879,12 +879,34 @@ def test_change_the_source_reloads_and_keeps_unsaved_edits(config: Config) -> No
     drive(app, scenario)
 
 
+def row_keys(table: DataTable[Any]) -> list[str]:
+    return [row.key.value for row in table.ordered_rows if row.key.value is not None]
+
+
+def append_lecture(
+    gateway: FakeCalendarGateway,
+    calendar: str,
+    course: str,
+    event_id: str = "bio00001",
+    date_str: str = "2026-09-22",
+) -> None:
+    gateway.events_of(calendar).append(
+        {
+            "id": event_id,
+            "summary": f"Lezione: Didattica - {course}",
+            "start": {"date": date_str},
+            "end": {"date": "2026-09-23"},
+        }
+    )
+
+
 def test_refresh_source_button_reloads_events_and_notifies(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gateway = FakeCalendarGateway({"Src": SOURCE})
     save_profile(config, calendars={"source": "Src", "target": "Tgt"})
     app = make_app(config, gateway)
+    app._calendar_list = [CalendarInfo("cached", "Cached Cal", True)]
     notifications: list[str] = []
     orig_notify = app.notify
 
@@ -897,16 +919,10 @@ def test_refresh_source_button_reloads_events_and_notifies(
     async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
         assert app.draft is not None
         assert app.query_one("#courses-table", DataTable).get_row("CS")
-        assert "Bio" not in app.query_one("#courses-table", DataTable)._row_locations
+        assert "Bio" not in row_keys(app.query_one("#courses-table", DataTable))
+        assert app._calendar_list is not None
 
-        gateway.events_of("Src").append(
-            {
-                "id": "bio00001",
-                "summary": "Lezione: Didattica - Bio",
-                "start": {"date": "2026-09-22"},
-                "end": {"date": "2026-09-23"},
-            }
-        )
+        append_lecture(gateway, "Src", "Bio")
 
         app.query_one(TabbedContent).active = "setup"
         await pilot.pause()
@@ -915,6 +931,7 @@ def test_refresh_source_button_reloads_events_and_notifies(
 
         assert app.query_one("#courses-table", DataTable).get_row("Bio")
         assert "Source calendar refreshed." in notifications
+        assert app._calendar_list is None
 
     drive(app, scenario)
 
@@ -935,14 +952,7 @@ def test_refresh_source_via_keybinding_keeps_unsaved_edits_and_discards_plan(
         await settle(app, pilot)
         assert app.plan is not None
 
-        gateway.events_of("Src").append(
-            {
-                "id": "bio00001",
-                "summary": "Lezione: Didattica - Bio",
-                "start": {"date": "2026-09-22"},
-                "end": {"date": "2026-09-23"},
-            }
-        )
+        append_lecture(gateway, "Src", "Bio")
 
         await pilot.press("r")
         await settle(app, pilot)
@@ -980,9 +990,7 @@ def test_refresh_source_fixed_ical_source_can_be_refreshed(config: Config) -> No
         assert app.query_one("#change-source", Button).disabled
         assert not app.query_one("#refresh-source", Button).disabled
         assert app.query_one("#courses-table", DataTable).get_row("Chemistry")
-        assert (
-            "Biology" not in app.query_one("#courses-table", DataTable)._row_locations
-        )
+        assert "Biology" not in row_keys(app.query_one("#courses-table", DataTable))
 
         feed_content[0] = (
             FEED
@@ -999,12 +1007,15 @@ def test_refresh_source_fixed_ical_source_can_be_refreshed(config: Config) -> No
 
 
 def test_refresh_source_failure_is_reported(config: Config) -> None:
-    gateway = FakeCalendarGateway({"Src": SOURCE})
+    gateway = FakeCalendarGateway({"Src": SOURCE, "Tgt": []})
     save_profile(config, calendars={"source": "Src", "target": "Tgt"})
     app = make_app(config, gateway)
 
     async def scenario(app: UnicalApp, pilot: Pilot[None]) -> None:
         assert app.draft is not None
+        await pilot.press("p")
+        await settle(app, pilot)
+        assert app.plan is not None
 
         def boom(*args: object, **kwargs: object) -> None:
             raise RuntimeError("network timeout")
@@ -1015,6 +1026,10 @@ def test_refresh_source_failure_is_reported(config: Config) -> None:
         await pilot.click("#refresh-source")
         await settle(app, pilot)
 
+        assert app.plan is None
+        assert "Source calendar reloaded: preview the changes again." in text_of(
+            app, "#plan-summary"
+        )
         assert "Could not load the source events: network timeout" in (
             await log_text(app, pilot)
         )
@@ -1898,7 +1913,7 @@ def test_parse_and_validate_window_string() -> None:
 
 
 def test_tui_window_and_course_updates(config: Config) -> None:
-    gateway = FakeCalendarGateway({"Src": SOURCE})
+    gateway = FakeCalendarGateway({"Src": SOURCE, "Tgt": []})
     save_profile(config, calendars={"source": "Src", "target": "Tgt"})
     app = make_app(config, gateway)
 
@@ -1906,9 +1921,17 @@ def test_tui_window_and_course_updates(config: Config) -> None:
         await settle(app, pilot)
         assert app.draft is not None
 
+        await pilot.press("p")
+        await settle(app, pilot)
+        assert app.plan is not None
+
         # Update window
         app._window_chosen("2026-03-01..2026-09-15")
         await settle(app, pilot)
+        assert app.plan is None
+        assert "Sync window changed: preview the changes again." in text_of(
+            app, "#plan-summary"
+        )
         assert app.options.window_from == date(2026, 3, 1)
         assert app.options.window_to == date(2026, 9, 15)
         assert not app.options.all_time
