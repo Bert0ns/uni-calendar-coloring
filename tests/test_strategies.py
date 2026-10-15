@@ -60,6 +60,34 @@ def test_exam_strategy_uses_saved_color() -> None:
     )
 
 
+def test_exam_strategy_matches_timed_and_indexed_occurrences() -> None:
+    prefs = Preferences(
+        exams={
+            "Security (2026-06-15 09:00)": ExamPreference(GoogleColor.FLAMINGO, True),
+            "Security (2026-06-15 14:00)": ExamPreference(GoogleColor.PEACOCK, True),
+            "Math (2026-06-15 #1)": ExamPreference(GoogleColor.BANANA, True),
+            "Math (2026-06-15 #2)": ExamPreference(GoogleColor.BASIL, True),
+        }
+    )
+    strategy = ExamColoringStrategy(prefs, POLIMI)
+
+    morning_exam = {
+        "summary": "Esame: Security",
+        "start": {"dateTime": "2026-06-15T09:00:00+02:00"},
+    }
+    afternoon_exam = {
+        "summary": "Esame: Security",
+        "start": {"dateTime": "2026-06-15T14:00:00+02:00"},
+    }
+    assert strategy.determine_color(morning_exam) is GoogleColor.FLAMINGO
+    assert strategy.determine_color(afternoon_exam) is GoogleColor.PEACOCK
+
+    math_1 = {"summary": "Esame: Math", "start": {"date": "2026-06-15"}}
+    math_2 = {"summary": "Esame: Math", "start": {"date": "2026-06-15"}}
+    assert strategy.determine_color(math_1) is GoogleColor.BANANA
+    assert strategy.determine_color(math_2) is GoogleColor.BASIL
+
+
 def test_exam_strategy_returns_none_for_unknown_or_other_dates() -> None:
     strategy = ExamColoringStrategy(PREFS, POLIMI)
     assert strategy.determine_color({**EXAM, "start": {"date": "2026-07-01"}}) is None

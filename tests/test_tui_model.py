@@ -185,3 +185,51 @@ def test_draft_can_start_from_an_older_saved_profile() -> None:
 
     assert resumed.is_dirty
     assert resumed.course_rows()[0].status is ItemStatus.MODIFIED
+
+
+def test_multiple_exams_same_day_produce_separate_rows() -> None:
+    events = [
+        {
+            "id": "e1",
+            "summary": "Esame: CS",
+            "start": {"dateTime": "2027-01-20T09:00:00+01:00"},
+            "description": "Iscritto",
+        },
+        {
+            "id": "e2",
+            "summary": "Esame: CS",
+            "start": {"dateTime": "2027-01-20T14:00:00+01:00"},
+            "description": "Non iscritto",
+        },
+    ]
+    draft = PreferencesDraft(
+        SyncSession(
+            options=SyncOptions(),
+            target_name="Tgt",
+            source_events=events,
+            catalog=discover(events, POLIMI),
+            profile=Profile(),
+        )
+    )
+    rows = draft.exam_rows()
+    assert len(rows) == 2
+    assert rows[0].key == "CS (2027-01-20 09:00)"
+    assert rows[1].key == "CS (2027-01-20 14:00)"
+    assert rows[0].subscribed is True
+    assert rows[1].subscribed is False
+
+    draft.toggle_exam_subscription("CS (2027-01-20 14:00)")
+    row_14 = draft.exam_row("CS (2027-01-20 14:00)")
+    assert row_14.subscribed is True
+    assert row_14.status is ItemStatus.MODIFIED
+
+    # Because 14:00 is now explicitly subscribed, the unseen 09:00 is automatically greyed out
+    row_09 = draft.exam_row("CS (2027-01-20 09:00)")
+    assert row_09.subscribed is False
+    assert row_09.subscribed_to_other_date is True
+
+    # But the user can explicitly subscribe to both sessions independently
+    draft.toggle_exam_subscription("CS (2027-01-20 09:00)")
+    assert draft.exam_row("CS (2027-01-20 09:00)").subscribed is True
+    assert draft.exam_row("CS (2027-01-20 14:00)").subscribed is True
+    assert draft.exam_row("CS (2027-01-20 09:00)").status is ItemStatus.MODIFIED

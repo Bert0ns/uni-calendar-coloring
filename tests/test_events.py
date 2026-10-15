@@ -1,6 +1,6 @@
 import pytest
 
-from unical.events import exam_key, start_date, title_from_exam_key
+from unical.events import exam_key, start_date, start_time, title_from_exam_key
 
 
 @pytest.mark.parametrize(
@@ -15,6 +15,21 @@ from unical.events import exam_key, start_date, title_from_exam_key
 )
 def test_start_date(event: dict, date: str) -> None:
     assert start_date(event) == date
+
+
+@pytest.mark.parametrize(
+    ("event", "expected_time"),
+    [
+        ({"start": {"dateTime": "2027-01-20T09:00:00+01:00"}}, "09:00"),
+        ({"start": {"dateTime": "2027-01-20T14:30:00Z"}}, "14:30"),
+        ({"start": {"date": "2027-01-25"}}, None),
+        ({"start": {}}, None),
+        ({}, None),
+        ({"start": None}, None),
+    ],
+)
+def test_start_time(event: dict, expected_time: str | None) -> None:
+    assert start_time(event) == expected_time
 
 
 @pytest.mark.parametrize(

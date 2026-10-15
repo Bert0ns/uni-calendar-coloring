@@ -45,6 +45,17 @@ def start_date(event: Event) -> str:
     return str(date_str)
 
 
+def start_time(event: Event) -> str | None:
+    """Returns the ``HH:MM`` start time of an event if present, else ``None``."""
+    start = event.get("start") or {}
+    date_str = start.get("dateTime")
+    if date_str and "T" in str(date_str):
+        time_part = str(date_str).split("T")[1]
+        if len(time_part) >= 5 and time_part[2] == ":":
+            return time_part[:5]
+    return None
+
+
 @dataclass(frozen=True)
 class ExamOccurrence:
     """A single exam session (appello): an exam title on a given date."""
