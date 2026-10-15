@@ -16,7 +16,7 @@ from functools import partial
 from typing import Any, ClassVar, Literal
 
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -278,6 +278,35 @@ def _subscribed(subscribed: bool | None) -> Text:
     return Text("✔ yes", style="green") if subscribed else Text("✘ no", style="dim")
 
 
+class ExamsTable(DataTable[Text]):
+    """A DataTable for exams that allows toggling subscription by clicking the
+    Subscribed column directly."""
+
+    class SubscribedToggled(Message):
+        def __init__(self, key: str) -> None:
+            super().__init__()
+            self.key = key
+
+    async def _on_click(self, event: events.Click) -> None:
+        meta = event.style.meta
+        row_index = meta.get("row")
+        column_index = meta.get("column")
+        if (
+            event.button == 1
+            and row_index is not None
+            and row_index >= 0
+            and column_index is not None
+            and 0 <= column_index < len(self.ordered_columns)
+            and self.ordered_columns[column_index].label.plain == "Subscribed"
+        ):
+            row_key = self.ordered_rows[row_index].key.value
+            self.move_cursor(row=row_index, column=0)
+            self.post_message(self.SubscribedToggled(row_key))
+            event.stop()
+            return
+        await super()._on_click(event)
+
+
 class UnicalApp(App[None]):
     TITLE = "Uni Calendar Coloring"
 
@@ -507,9 +536,11 @@ class UnicalApp(App[None]):
 
     @staticmethod
     def _table(tab: str, *columns: str) -> DataTable[Text]:
-        table: DataTable[Text] = DataTable(
-            id=f"{tab}-table", cursor_type="row", zebra_stripes=True
-        )
+        table: DataTable[Text]
+        if tab == EXAMS:
+            table = ExamsTable(id=f"{tab}-table", cursor_type="row", zebra_stripes=True)
+        else:
+            table = DataTable(id=f"{tab}-table", cursor_type="row", zebra_stripes=True)
         table.add_columns(*columns)
         return table
 
@@ -619,15 +650,12 @@ class UnicalApp(App[None]):
 
     def _fill(self, tab: str, rows: list[tuple[str, list[Text]]]) -> None:
         table = self._ui.query_one(f"#{tab}-table", DataTable)
-        cursor = table.cursor_coordinate
+        cursor = table.cursor_row
         table.clear()
         for key, cells in rows:
             table.add_row(*cells, key=key)
         if rows:
-            table.move_cursor(
-                row=min(cursor.row, len(rows) - 1),
-                column=cursor.column,
-            )
+            table.move_cursor(row=min(cursor, len(rows) - 1))
 
     @staticmethod
     def _color_cells(row: ColorRow) -> tuple[str, list[Text]]:
@@ -708,18 +736,13 @@ class UnicalApp(App[None]):
             return
         if tab in (RULES, ENROLLMENT, EVENTS):
             self._edit_rules_row(tab, key)
-        elif tab == EXAMS:
-            col_index = event.data_table.cursor_coordinate.column
-            columns = event.data_table.ordered_columns
-            if (
-                0 <= col_index < len(columns)
-                and columns[col_index].label.plain == "Subscribed"
-            ):
-                self._toggle_exam_subscription(key)
-            else:
-                self._pick_color(tab, key)
         else:
             self._pick_color(tab, key)
+
+    def on_exams_table_subscribed_toggled(
+        self, event: ExamsTable.SubscribedToggled
+    ) -> None:
+        self._toggle_exam_subscription(event.key)
 
     def action_pick_color(self) -> None:
         tab = self._active_tab()

@@ -371,6 +371,12 @@ def test_edit_exams_and_deadlines(config: Config) -> None:
     drive(app, scenario)
 
 
+def column_index(table: DataTable[object], label: str) -> int:
+    return next(
+        i for i, c in enumerate(table.ordered_columns) if c.label.plain == label
+    )
+
+
 def test_click_exam_subscribed_toggles_subscription(config: Config) -> None:
     app = make_app(config, FakeCalendarGateway({"Src": SOURCE}))
 
@@ -385,21 +391,15 @@ def test_click_exam_subscribed_toggles_subscription(config: Config) -> None:
         assert cells(app, "exams", physics)[3:] == ["?", "   — none", "not set"]
 
         row_idx = table.get_row_index(physics)
-        sub_col_idx = next(
-            i
-            for i, c in enumerate(table.ordered_columns)
-            if c.label.plain == "Subscribed"
-        )
+        sub_col_idx = column_index(table, "Subscribed")
         region = table._get_cell_region(Coordinate(row_idx, sub_col_idx))
 
-        # Focus and click on Subscribed column
-        await pilot.click("#exams-table", offset=(region.x + 1, region.y))
-        await pilot.pause()
+        # Single click on Subscribed column toggles subscription immediately
         await pilot.click("#exams-table", offset=(region.x + 1, region.y))
         await pilot.pause()
         assert cells(app, "exams", physics)[3:] == ["✔ yes", "    Tomato", "● modified"]
 
-        # Click again on Subscribed column toggles back
+        # Single click again on Subscribed column toggles back
         await pilot.click("#exams-table", offset=(region.x + 1, region.y))
         await pilot.pause()
         assert cells(app, "exams", physics)[3:] == [
@@ -408,17 +408,27 @@ def test_click_exam_subscribed_toggles_subscription(config: Config) -> None:
             "● modified",
         ]
 
+        # Enter key on the exam row opens ColorPicker (keyboard Enter is not broken by click)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ColorPicker)
+        assert app.screen.subject == physics
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, ColorPicker)
+
+        # Space key toggles subscription
+        await pilot.press("space")
+        await pilot.pause()
+        assert cells(app, "exams", physics)[3:] == ["✔ yes", "    Tomato", "● modified"]
+
         # Click on Color column opens ColorPicker
-        color_col_idx = next(
-            i for i, c in enumerate(table.ordered_columns) if c.label.plain == "Color"
-        )
+        color_col_idx = column_index(table, "Color")
         color_region = table._get_cell_region(Coordinate(row_idx, color_col_idx))
         await pilot.click("#exams-table", offset=(color_region.x + 1, color_region.y))
         await pilot.pause()
-        await pilot.click("#exams-table", offset=(color_region.x + 1, color_region.y))
-        await pilot.pause()
         assert isinstance(app.screen, ColorPicker)
-        assert app.screen.subject == "Physics (2027-02-01)"
+        assert app.screen.subject == physics
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, ColorPicker)
