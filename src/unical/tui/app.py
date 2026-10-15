@@ -619,12 +619,15 @@ class UnicalApp(App[None]):
 
     def _fill(self, tab: str, rows: list[tuple[str, list[Text]]]) -> None:
         table = self._ui.query_one(f"#{tab}-table", DataTable)
-        cursor = table.cursor_row
+        cursor = table.cursor_coordinate
         table.clear()
         for key, cells in rows:
             table.add_row(*cells, key=key)
         if rows:
-            table.move_cursor(row=min(cursor, len(rows) - 1))
+            table.move_cursor(
+                row=min(cursor.row, len(rows) - 1),
+                column=cursor.column,
+            )
 
     @staticmethod
     def _color_cells(row: ColorRow) -> tuple[str, list[Text]]:
@@ -705,6 +708,16 @@ class UnicalApp(App[None]):
             return
         if tab in (RULES, ENROLLMENT, EVENTS):
             self._edit_rules_row(tab, key)
+        elif tab == EXAMS:
+            col_index = event.data_table.cursor_coordinate.column
+            columns = event.data_table.ordered_columns
+            if (
+                0 <= col_index < len(columns)
+                and columns[col_index].label.plain == "Subscribed"
+            ):
+                self._toggle_exam_subscription(key)
+            else:
+                self._pick_color(tab, key)
         else:
             self._pick_color(tab, key)
 
@@ -741,12 +754,16 @@ class UnicalApp(App[None]):
             self.draft.set_exam_color(key, color)
         self._preferences_changed()
 
-    def action_toggle_subscription(self) -> None:
-        key = self._cursor_key(EXAMS)
-        if self.draft is None or key is None:
+    def _toggle_exam_subscription(self, key: str) -> None:
+        if self.draft is None:
             return
         self.draft.toggle_exam_subscription(key)
         self._preferences_changed()
+
+    def action_toggle_subscription(self) -> None:
+        key = self._cursor_key(EXAMS)
+        if key is not None:
+            self._toggle_exam_subscription(key)
 
     def action_save(self) -> None:
         draft = self.draft
