@@ -330,6 +330,9 @@ class UnicalApp(App[None]):
         width: 1fr;
         padding: 1 1;
     }
+    .setup-row Button {
+        margin-left: 1;
+    }
     #setup-notes {
         margin-top: 1;
     }
@@ -358,6 +361,7 @@ class UnicalApp(App[None]):
         Binding("ctrl+s", "save", "Save"),
         Binding("p", "preview", "Preview"),
         Binding("a", "apply", "Apply"),
+        Binding("r", "refresh_source", "Refresh"),
         Binding("n", "new_rule", "New rule"),
         Binding("e", "edit_rule", "Edit"),
         Binding("d", "delete_rule", "Delete"),
@@ -413,6 +417,7 @@ class UnicalApp(App[None]):
                 with Horizontal(classes="setup-row"):
                     yield Static("Source", classes="setup-label")
                     yield Static(id="setup-source", classes="setup-value")
+                    yield Button("Refresh", id="refresh-source")
                     yield Button("Change…", id="change-source")
                 with Horizontal(classes="setup-row"):
                     yield Static("Target", classes="setup-label")
@@ -542,11 +547,18 @@ class UnicalApp(App[None]):
     def _active_tab(self) -> str:
         return self._ui.query_one(TabbedContent).active
 
+    @property
+    def _can_refresh_source(self) -> bool:
+        return not self.busy and self.profile is not None
+
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
         self._ui.query_one("#preview", Button).disabled = busy or self.draft is None
         self._ui.query_one("#apply", Button).disabled = busy or self.plan is None
         no_profile = busy or self.profile is None
+        self._ui.query_one(
+            "#refresh-source", Button
+        ).disabled = not self._can_refresh_source
         self._ui.query_one("#change-source", Button).disabled = (
             no_profile or self.setup.fixed_source is not None
         )
@@ -570,6 +582,8 @@ class UnicalApp(App[None]):
             return None if self.busy or self.draft is None else True
         if action == "apply":
             return None if self.busy or self.plan is None else True
+        if action == "refresh_source":
+            return True if self._can_refresh_source else None
         if action in ("new_rule", "edit_rule", "delete_rule", "move_rule"):
             return self.draft is not None and tab == RULES
         return True
@@ -1205,7 +1219,7 @@ class UnicalApp(App[None]):
             self.options, window_from=d_from, window_to=d_to, all_time=all_t
         )
         self._refresh_setup()
-        self.load_session()
+        self.load_session(plan_reason="Sync window changed: preview the changes again.")
         self.notify("Sync window updated.")
 
     def _course_chosen(self, value: str | None) -> None:
@@ -1249,6 +1263,8 @@ class UnicalApp(App[None]):
             self.action_preview()
         elif event.button.id == "apply":
             self.action_apply()
+        elif event.button.id == "refresh-source":
+            self.action_refresh_source()
         elif event.button.id == "change-source":
             self.choose_source()
         elif event.button.id == "change-target":
@@ -1302,9 +1318,18 @@ class UnicalApp(App[None]):
             self._ui.query_one(TabbedContent).active = SYNC
             self.apply_changes()
 
+    def action_refresh_source(self) -> None:
+        if self._can_refresh_source:
+            self._calendar_list = None
+            self.load_session(notify=True)
+
     @work(exclusive=True, group="calendar")
     async def load_session(
-        self, source_name: str | None = None, ical_url: str | None = None
+        self,
+        source_name: str | None = None,
+        ical_url: str | None = None,
+        notify: bool = False,
+        plan_reason: str | None = None,
     ) -> None:
         """Loads the events, from the calendar ``source_name`` or the iCal feed
         at ``ical_url`` if given (then the new source), keeping the edits not
@@ -1314,6 +1339,16 @@ class UnicalApp(App[None]):
             if source_name is None and ical_url is None
             else self._source_for(source_name, ical_url)
         )
+        reason = (
+            plan_reason
+            if plan_reason is not None
+            else "Source changed: preview the changes again."
+            if ical_url is not None
+            else "Calendars changed: preview the changes again."
+            if source_name is not None
+            else "Source calendar reloaded: preview the changes again."
+        )
+        self._discard_plan(reason)
         self._set_busy(True)
         for table in self._ui.query(DataTable):
             table.loading = True
@@ -1345,6 +1380,8 @@ class UnicalApp(App[None]):
             self.draft = PreferencesDraft(session, saved)
             self._refresh_tables()
             self._refresh_setup()
+            if notify:
+                self.notify("Source calendar refreshed.")
         for table in self._ui.query(DataTable):
             table.loading = False
         self._set_busy(False)
