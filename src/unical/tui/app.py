@@ -556,9 +556,9 @@ class UnicalApp(App[None]):
         self._ui.query_one("#preview", Button).disabled = busy or self.draft is None
         self._ui.query_one("#apply", Button).disabled = busy or self.plan is None
         no_profile = busy or self.profile is None
-        self._ui.query_one(
-            "#refresh-source", Button
-        ).disabled = not self._can_refresh_source
+        self._ui.query_one("#refresh-source", Button).disabled = (
+            not self._can_refresh_source
+        )
         self._ui.query_one("#change-source", Button).disabled = (
             no_profile or self.setup.fixed_source is not None
         )
@@ -1342,11 +1342,15 @@ class UnicalApp(App[None]):
         reason = (
             plan_reason
             if plan_reason is not None
-            else "Source changed: preview the changes again."
-            if ical_url is not None
-            else "Calendars changed: preview the changes again."
-            if source_name is not None
-            else "Source calendar reloaded: preview the changes again."
+            else (
+                "Source changed: preview the changes again."
+                if ical_url is not None
+                else (
+                    "Calendars changed: preview the changes again."
+                    if source_name is not None
+                    else "Source calendar reloaded: preview the changes again."
+                )
+            )
         )
         self._discard_plan(reason)
         self._set_busy(True)
