@@ -5,14 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from unical.events import (
-    Event,
-    ExamOccurrence,
-    description_of,
-    start_date,
-    start_time,
-    summary_of,
-)
+from unical.events import Event, ExamOccurrence, start_date, start_time
 from unical.rules import Classification, Classifier, EventKind
 
 
@@ -42,59 +35,39 @@ def discover(events: Iterable[Event], classifier: Classifier) -> Catalog:
     courses: dict[str, None] = {}
     deadlines: dict[str, None] = {}
     raw_exams: list[tuple[Event, Classification]] = []
-    seen_event_sig: set[tuple[object, ...]] = set()
 
     for event in events:
         classification = classifier.classify(event)
         if classification is None:
             continue
         if classification.kind is EventKind.EXAM:
-            sig = (
-                event.get("id"),
-                summary_of(event),
-                description_of(event),
-                str(event.get("start")),
-                str(event.get("end")),
-            )
-            if sig in seen_event_sig:
-                continue
-            seen_event_sig.add(sig)
             raw_exams.append((event, classification))
         elif classification.kind is EventKind.LECTURE:
             courses.setdefault(classification.name, None)
         else:
             deadlines.setdefault(classification.name, None)
 
-    events_by_group: dict[tuple[str, str], list[Event]] = {}
+    times_by_group: dict[tuple[str, str], set[str]] = {}
     for event, classification in raw_exams:
-        group_key = (classification.name, start_date(event))
-        events_by_group.setdefault(group_key, []).append(event)
+        t = start_time(event)
+        if t is not None:
+            group_key = (classification.name, start_date(event))
+            times_by_group.setdefault(group_key, set()).add(t)
 
-    date_labels: dict[int, str] = {}
-    for (_name, d_str), group in events_by_group.items():
-        if len(group) == 1:
-            date_labels[id(group[0])] = d_str
-        else:
-            times = [start_time(ev) for ev in group]
-            if all(t is not None for t in times) and len(set(times)) == len(times):
-                for ev in group:
-                    date_labels[id(ev)] = f"{d_str} {start_time(ev)}"
-            else:
-                for idx, ev in enumerate(group, start=1):
-                    t = start_time(ev)
-                    if t is not None:
-                        date_labels[id(ev)] = f"{d_str} {t} #{idx}"
-                    else:
-                        date_labels[id(ev)] = f"{d_str} #{idx}"
-
-    exams: list[ExamOccurrence] = [
-        ExamOccurrence(
-            title=classification.name,
-            date=date_labels[id(event)],
-            enrollment=classifier.enrollment(event),
+    exams: list[ExamOccurrence] = []
+    for event, classification in raw_exams:
+        d_str = start_date(event)
+        group_key = (classification.name, d_str)
+        distinct_times = times_by_group.get(group_key, set())
+        t = start_time(event)
+        date_label = f"{d_str} {t}" if len(distinct_times) > 1 and t is not None else d_str
+        exams.append(
+            ExamOccurrence(
+                title=classification.name,
+                date=date_label,
+                enrollment=classifier.enrollment(event),
+            )
         )
-        for event, classification in raw_exams
-    ]
 
     return Catalog(
         courses=tuple(courses),

@@ -227,6 +227,7 @@ def test_multiple_exams_same_day_produce_separate_rows() -> None:
     row_09 = draft.exam_row("CS (2027-01-20 09:00)")
     assert row_09.subscribed is False
     assert row_09.subscribed_to_other_date is True
+    assert row_09.hint == "enrolled · another session subscribed"
 
     # But the user can explicitly subscribe to both sessions independently
     draft.toggle_exam_subscription("CS (2027-01-20 09:00)")

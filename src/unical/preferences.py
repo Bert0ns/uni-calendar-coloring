@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from unical.events import ExamOccurrence, exam_key, title_from_exam_key
+from unical.events import ExamOccurrence, title_from_exam_key
 from unical.palette import GoogleColor
 
 
@@ -35,14 +35,7 @@ class Preferences:
         self.deadline_colors[deadline] = color
 
     def exam(self, occurrence: ExamOccurrence) -> ExamPreference | None:
-        pref = self.exams.get(occurrence.key)
-        if pref is not None:
-            return pref
-        if " " in occurrence.date:
-            base_date = occurrence.date.split(" ")[0]
-            base_key = exam_key(occurrence.title, base_date)
-            return self.exams.get(base_key)
-        return None
+        return self.exams.get(occurrence.key)
 
     def set_exam(self, occurrence: ExamOccurrence, preference: ExamPreference) -> None:
         self.exams[occurrence.key] = preference

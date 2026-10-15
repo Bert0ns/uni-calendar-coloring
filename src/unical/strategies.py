@@ -8,7 +8,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
-from unical.events import Event, ExamOccurrence, exam_key, start_time
+from unical.events import Event, ExamOccurrence, start_time
 from unical.palette import GoogleColor
 from unical.preferences import Preferences
 from unical.rules import Classifier
@@ -56,18 +56,13 @@ class ExamColoringStrategy(EventColoringStrategy):
     def __init__(self, preferences: Preferences, classifier: Classifier) -> None:
         self.preferences = preferences
         self.classifier = classifier
-        self._counts: dict[tuple[str, str], int] = {}
 
     def determine_color(self, event: Event) -> GoogleColor | None:
         occurrence = self.classifier.exam_occurrence(event)
         if occurrence is None:
             return None
-        # 1. Direct match with occurrence key
-        preference = self.preferences.exam(occurrence)
-        if preference is not None:
-            return preference.color
 
-        # 2. Match with timed key if event has a start time
+        # 1. Match with timed key first if event has a start time
         time = start_time(event)
         if time:
             timed_occ = ExamOccurrence(
@@ -77,14 +72,10 @@ class ExamColoringStrategy(EventColoringStrategy):
             if timed_pref is not None:
                 return timed_pref.color
 
-        # 3. Match with indexed key if disambiguated by index
-        pair = (occurrence.title, occurrence.date)
-        idx = self._counts.get(pair, 0) + 1
-        self._counts[pair] = idx
-        suffix = f" {time} #{idx}" if time else f" #{idx}"
-        indexed_key = exam_key(occurrence.title, f"{occurrence.date}{suffix}")
-        if indexed_key in self.preferences.exams:
-            return self.preferences.exams[indexed_key].color
+        # 2. Fall back to date-only key
+        preference = self.preferences.exam(occurrence)
+        if preference is not None:
+            return preference.color
 
         return None
 
