@@ -10,7 +10,7 @@ import copy
 from dataclasses import dataclass
 from enum import Enum
 
-from unical.events import Enrollment, ExamOccurrence
+from unical.events import Enrollment, ExamOccurrence, title_from_exam_key
 from unical.palette import GoogleColor
 from unical.preferences import ExamPreference, Preferences
 from unical.profile import CalendarSettings, Profile
@@ -49,6 +49,7 @@ class ExamRow:
     color: GoogleColor | None
     status: ItemStatus
     subscribed_to_other_date: bool
+    subscribed_to_other_same_day: bool = False
 
     @property
     def key(self) -> str:
@@ -63,7 +64,9 @@ class ExamRow:
             Enrollment.UNKNOWN: "",
         }
         parts = [hints[self.exam.enrollment]]
-        if self.subscribed_to_other_date:
+        if self.subscribed_to_other_same_day:
+            parts.append("another session subscribed")
+        elif self.subscribed_to_other_date:
             parts.append("another date subscribed")
         return " · ".join(part for part in parts if part)
 
@@ -198,12 +201,23 @@ class PreferencesDraft:
             status = ItemStatus.SUGGESTED
         else:
             status = ItemStatus.UNSET
+
+        other_session = is_subscribed_to_other_session(exam, applied, subscribed_titles)
+        other_same_day = False
+        if other_session:
+            base_date = exam.date.split(" ")[0]
+            for key, pref in effective.exams.items():
+                if pref.subscribed and title_from_exam_key(key) == exam.title:
+                    key_date = key.removeprefix(f"{exam.title} (").rstrip(")")
+                    if key_date.split(" ")[0] == base_date:
+                        other_same_day = True
+                        break
+
         return ExamRow(
             exam=exam,
             subscribed=applied.subscribed if applied is not None else None,
             color=applied.color if applied is not None else None,
             status=status,
-            subscribed_to_other_date=is_subscribed_to_other_session(
-                exam, applied, subscribed_titles
-            ),
+            subscribed_to_other_date=other_session,
+            subscribed_to_other_same_day=other_same_day,
         )

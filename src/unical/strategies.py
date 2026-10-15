@@ -8,7 +8,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
-from unical.events import Event
+from unical.events import Event, ExamOccurrence, start_time
 from unical.palette import GoogleColor
 from unical.preferences import Preferences
 from unical.rules import Classifier
@@ -61,8 +61,23 @@ class ExamColoringStrategy(EventColoringStrategy):
         occurrence = self.classifier.exam_occurrence(event)
         if occurrence is None:
             return None
+
+        # 1. Match with timed key first if event has a start time
+        time = start_time(event)
+        if time:
+            timed_occ = ExamOccurrence(
+                occurrence.title, f"{occurrence.date} {time}", occurrence.enrollment
+            )
+            timed_pref = self.preferences.exam(timed_occ)
+            if timed_pref is not None:
+                return timed_pref.color
+
+        # 2. Fall back to date-only key
         preference = self.preferences.exam(occurrence)
-        return preference.color if preference is not None else None
+        if preference is not None:
+            return preference.color
+
+        return None
 
 
 class DeadlineColoringStrategy(EventColoringStrategy):

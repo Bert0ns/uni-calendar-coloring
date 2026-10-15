@@ -47,6 +47,61 @@ def test_discover_collects_courses_and_exams_in_order() -> None:
     )
 
 
+def test_discover_separates_multiple_exams_same_day_with_times() -> None:
+    catalog = discover(
+        [
+            {
+                "summary": "Esame: Security",
+                "start": {"dateTime": "2027-01-20T09:00:00+01:00"},
+                "description": "Iscritto",
+            },
+            {
+                "summary": "Esame: Security",
+                "start": {"dateTime": "2027-01-20T14:30:00+01:00"},
+                "description": "Non iscritto",
+            },
+        ],
+        POLIMI,
+    )
+    assert catalog.exams == (
+        ExamOccurrence("Security", "2027-01-20 09:00", Enrollment.ENROLLED),
+        ExamOccurrence("Security", "2027-01-20 14:30", Enrollment.NOT_ENROLLED),
+    )
+
+
+def test_discover_deduplicates_identical_exam_events() -> None:
+    identical_event = {
+        "id": "evt123",
+        "summary": "Esame: Security",
+        "start": {"dateTime": "2027-01-20T09:00:00+01:00"},
+        "end": {"dateTime": "2027-01-20T11:00:00+01:00"},
+        "description": "Iscritto",
+    }
+    catalog = discover([identical_event, identical_event], POLIMI)
+    assert len(catalog.exams) == 1
+    assert catalog.exams == (
+        ExamOccurrence("Security", "2027-01-20", Enrollment.ENROLLED),
+    )
+
+
+def test_discover_deduplicates_duplicate_events_with_multiple_times() -> None:
+    event_morning = {
+        "summary": "Esame: Security",
+        "start": {"dateTime": "2027-01-20T09:00:00+01:00"},
+        "description": "Iscritto",
+    }
+    event_afternoon = {
+        "summary": "Esame: Security",
+        "start": {"dateTime": "2027-01-20T14:30:00+01:00"},
+        "description": "Non iscritto",
+    }
+    catalog = discover([event_morning, event_morning, event_afternoon], POLIMI)
+    assert catalog.exams == (
+        ExamOccurrence("Security", "2027-01-20 09:00", Enrollment.ENROLLED),
+        ExamOccurrence("Security", "2027-01-20 14:30", Enrollment.NOT_ENROLLED),
+    )
+
+
 def test_discover_empty() -> None:
     assert discover([], POLIMI) == Catalog()
 

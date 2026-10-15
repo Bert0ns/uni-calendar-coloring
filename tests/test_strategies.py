@@ -60,6 +60,48 @@ def test_exam_strategy_uses_saved_color() -> None:
     )
 
 
+def test_exam_strategy_matches_timed_occurrences_and_falls_back_to_date() -> None:
+    prefs = Preferences(
+        exams={
+            "Security (2026-06-15 09:00)": ExamPreference(GoogleColor.FLAMINGO, True),
+            "Security (2026-06-15 14:00)": ExamPreference(GoogleColor.PEACOCK, True),
+            "Math (2026-06-15)": ExamPreference(GoogleColor.BANANA, True),
+        }
+    )
+    strategy = ExamColoringStrategy(prefs, POLIMI)
+
+    morning_exam = {
+        "summary": "Esame: Security",
+        "start": {"dateTime": "2026-06-15T09:00:00+02:00"},
+    }
+    afternoon_exam = {
+        "summary": "Esame: Security",
+        "start": {"dateTime": "2026-06-15T14:00:00+02:00"},
+    }
+    # Direct timed matches
+    assert strategy.determine_color(morning_exam) is GoogleColor.FLAMINGO
+    assert strategy.determine_color(afternoon_exam) is GoogleColor.PEACOCK
+    # Idempotent: repeated calls produce identical results
+    assert strategy.determine_color(morning_exam) is GoogleColor.FLAMINGO
+
+    # Math only has an untimed base key; event with time falls back to it
+    math_timed = {
+        "summary": "Esame: Math",
+        "start": {"dateTime": "2026-06-15T11:00:00+02:00"},
+    }
+    assert strategy.determine_color(math_timed) is GoogleColor.BANANA
+
+    # Untimed preference does not shadow timed preference if both exist
+    prefs_with_both = Preferences(
+        exams={
+            "Security (2026-06-15)": ExamPreference(GoogleColor.BASIL, True),
+            "Security (2026-06-15 09:00)": ExamPreference(GoogleColor.FLAMINGO, True),
+        }
+    )
+    strategy_both = ExamColoringStrategy(prefs_with_both, POLIMI)
+    assert strategy_both.determine_color(morning_exam) is GoogleColor.FLAMINGO
+
+
 def test_exam_strategy_returns_none_for_unknown_or_other_dates() -> None:
     strategy = ExamColoringStrategy(PREFS, POLIMI)
     assert strategy.determine_color({**EXAM, "start": {"date": "2026-07-01"}}) is None
