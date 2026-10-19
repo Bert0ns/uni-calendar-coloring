@@ -23,9 +23,6 @@ on:
         required: false
         default: false
         type: boolean
-  schedule:
-    # Weekly automatic sync (Mondays at 06:00 UTC)
-    - cron: "0 6 * * 1"
 
 permissions:
   contents: write
@@ -83,7 +80,6 @@ jobs:
           SOURCE_CALENDAR_NAME: ${{ secrets.SOURCE_CALENDAR_NAME }}
           TARGET_CALENDAR_NAME: ${{ secrets.TARGET_CALENDAR_NAME }}
           SOURCE_ICAL_URL: ${{ secrets.SOURCE_ICAL_URL }}
-          # Empty on scheduled runs: fall back to the defaults.
           TARGET: ${{ inputs.target }}
           VERBOSE: ${{ inputs.verbose }}
           DRY_RUN: ${{ inputs.dry_run }}
