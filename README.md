@@ -620,8 +620,8 @@ are resolved in this order:
 
 The repository includes a workflow,
 [`.github/workflows/manual_sync.yml`](.github/workflows/manual_sync.yml), that
-syncs **every Monday at 06:00 UTC**. You can also run it from the **Actions**
-tab and choose what to sync, verbose output, or a dry run.
+can be triggered manually from the **Actions** tab. You can choose what to sync,
+enable verbose output, or perform a dry run.
 
 1. Fork the repository and commit your own `profile.json` (the one in the
    repository belongs to its author), or override the calendar names with the
